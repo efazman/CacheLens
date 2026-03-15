@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Profiling artifacts
+outputs/run_*/
+perf.data
+perf.data.old
+
+# Benchmark binaries
+benchmarks/matrix_good
+benchmarks/matrix_bad
+benchmarks/pointer_chase
+
+# Editor
+.vscode/
+.idea/
+*.swp

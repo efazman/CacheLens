@@ -1,0 +1,56 @@
+{
+  "capabilities": {
+    "perf_available": true,
+    "perf_version": null,
+    "addr2line_available": true,
+    "addr2line_version": null,
+    "target_has_debug_info": true,
+    "mem_sampling_supported": false,
+    "available_events": [],
+    "collection_mode": "COUNTER_SAMPLING",
+    "counter_sampling_event": "cache-misses",
+    "warnings": [],
+    "errors": [],
+    "can_proceed": true
+  },
+  "collection_mode": "COUNTER_SAMPLING",
+  "target_binary": "benchmarks/matrix_bad",
+  "target_args": [],
+  "run_dir": "outputs/smoke_report",
+  "unresolved_sample_rate": 0.0,
+  "counters": {
+    "cache-misses": 10,
+    "cache-references": 100
+  },
+  "duration_seconds": 1.2,
+  "hotspots": [
+    {
+      "rank": 1,
+      "file": "benchmarks/matrix_bad.cpp",
+      "line": 41,
+      "function": "multiply_bad",
+      "miss_count": 10,
+      "fraction_of_total": 1.0,
+      "snippet": "41 -> line"
+    }
+  ],
+  "signals": [
+    {
+      "llc_miss_rate": 0.1,
+      "hotspot_concentration": 1.0,
+      "has_nested_loops": false,
+      "has_pointer_deref": false,
+      "dataset_size_hint": null,
+      "unresolved_sample_rate": 0.0
+    }
+  ],
+  "diagnoses": [
+    {
+      "summary": "test",
+      "explanation": "why",
+      "suggestion": "fix",
+      "raw_response": "{}",
+      "parse_ok": true
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+# perf script output sample — used by test_perf_parser.py
+# Format: command  pid/tid  [cpu]  timestamp:  event:  address  symbol+offset (dso)
+matrix_bad 12345/12345 [001] 1234567.890123:      cache-misses:   0x401234 multiply_bad+0x42 (/home/user/matrix_bad)
+matrix_bad 12345/12345 [001] 1234567.890456:      cache-misses:   0x401238 multiply_bad+0x46 (/home/user/matrix_bad)
+matrix_bad 12345/12345 [000] 1234567.890789:      cache-misses:   0x40123c multiply_bad+0x4a (/home/user/matrix_bad)
+matrix_bad 12345/12345 [001] 1234567.891000:      cache-misses:   0x401100 init+0x20 (/home/user/matrix_bad)
+matrix_bad 12345/12345 [000] 1234567.891200:      cache-misses:   0x7f0001234567 __memset_avx2+0x123 (/lib/x86_64-linux-gnu/libc.so.6)
+matrix_bad 12345/12345 [001] 1234567.891400:      cache-misses:            0x401234 multiply_bad+0x42 (/home/user/matrix_bad)
+matrix_bad 12345/12345 [001] 1234567.891600:      cache-misses:            0x401234 multiply_bad+0x42 (/home/user/matrix_bad)
+matrix_bad 12345/12345 [000] 1234567.891800:      cache-misses:   0x401238 multiply_bad+0x46 (/home/user/matrix_bad)
