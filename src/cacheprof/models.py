@@ -117,27 +117,13 @@ class Hotspot:
 
 @dataclass
 class HotspotSignals:
-    """Quantitative signals extracted for one hotspot.  Fed to the LLM, not used as a diagnosis."""
+    """Quantitative signals extracted for one hotspot.  Descriptive, not a diagnosis."""
     llc_miss_rate: float = 0.0
     hotspot_concentration: float = 0.0  # fraction of total misses in this one spot
     has_nested_loops: bool = False
     has_pointer_deref: bool = False
     dataset_size_hint: Optional[int] = None
     unresolved_sample_rate: float = 0.0
-
-
-# ---------------------------------------------------------------------------
-# LLM diagnosis
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Diagnosis:
-    """LLM-generated explanation for a hotspot."""
-    summary: str = ""
-    explanation: str = ""
-    suggestion: str = ""
-    raw_response: str = ""  # always keep the raw text for debugging
-    parse_ok: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +137,6 @@ class ProfileReport:
     stat_result: Optional[PerfStatResult] = None
     hotspots: list[Hotspot] = field(default_factory=list)
     signals: list[HotspotSignals] = field(default_factory=list)
-    diagnoses: list[Diagnosis] = field(default_factory=list)
     unresolved_sample_rate: float = 0.0
     run_dir: Optional[Path] = None
     target_binary: str = ""

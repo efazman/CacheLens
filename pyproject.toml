@@ -1,16 +1,14 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cacheprof"
 version = "0.1.0"
-description = "CLI profiler that detects cache locality bottlenecks and generates AI-grounded explanations"
+description = "Python prototype of the CacheLens cache-locality profiler (superseded by the C++ implementation)"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
-    "rich>=13.0",
-    "openai>=1.0",
 ]
 
 [project.optional-dependencies]

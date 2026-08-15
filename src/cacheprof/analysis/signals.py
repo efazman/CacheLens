@@ -1,7 +1,8 @@
 """Signal extraction for hotspots.
 
-This module outputs STRUCTURED QUANTITATIVE SIGNALS, not diagnoses.
-The LLM does the reasoning.  We just give it data to reason about.
+Computes quantitative signals per hotspot (miss rate, concentration, and
+source-shape heuristics) for reporting.  Descriptive only — nothing here
+decides *why* a site misses.
 """
 
 from __future__ import annotations

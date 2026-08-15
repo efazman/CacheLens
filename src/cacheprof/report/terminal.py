@@ -10,7 +10,7 @@ def print_report(report: ProfileReport) -> None:
     """Print a full profile report to the terminal."""
     print()
     print("=" * 60)
-    print("  CacheScope Report")
+    print("  CacheLens Report")
     print("=" * 60)
     print()
 
@@ -33,18 +33,6 @@ def print_report(report: ProfileReport) -> None:
     # Hotspots table
     if report.hotspots:
         _print_hotspots(report)
-
-    # LLM diagnoses
-    for i, (hs, diag) in enumerate(zip(report.hotspots, report.diagnoses)):
-        if not diag.summary:
-            continue
-        print(f"--- Hotspot #{i+1} — {hs.location.file}:{hs.location.line} ---")
-        print(f"  {diag.summary}")
-        print()
-        print(f"  {diag.explanation}")
-        print()
-        print(f"  Suggestion: {diag.suggestion}")
-        print()
 
 
 def _print_counters(report: ProfileReport) -> None:

@@ -17,8 +17,12 @@ perf.data.old
 benchmarks/matrix_good
 benchmarks/matrix_bad
 benchmarks/pointer_chase
+*.dSYM/
 
 # Editor
 .vscode/
 .idea/
 *.swp
+
+# macOS
+.DS_Store

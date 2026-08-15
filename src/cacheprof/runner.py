@@ -111,21 +111,7 @@ def run_pipeline(
         report.hotspots, report.stat_result, report.unresolved_sample_rate
     )
 
-    # --- Stage 10: Optional LLM explanations ---
-    if config.enable_llm and report.hotspots and report.signals:
-        try:
-            from cacheprof.llm.explain import explain_hotspots
-
-            report.diagnoses = explain_hotspots(
-                report.hotspots,
-                report.signals,
-                report.collection_mode,
-                config,
-            )
-        except Exception as exc:
-            log.warning("LLM stage failed: %s", exc)
-
-    # --- Stage 11: Reports ---
+    # --- Stage 10: Reports ---
     write_json_report(report, run_dir)
     write_markdown_report(report, run_dir)
 

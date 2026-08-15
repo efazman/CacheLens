@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Demo: run CacheScope against the benchmark binaries.
+# Demo: run the CacheLens Python prototype against the benchmark binaries.
+# Requires Linux with a hardware PMU — see README.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

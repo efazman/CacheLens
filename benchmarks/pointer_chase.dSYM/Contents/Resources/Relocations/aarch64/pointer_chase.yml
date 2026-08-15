@@ -1,9 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     pointer_chase
-relocations:
-  - { offsetInCU: 0x26, offset: 0x26, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x1000038DC, symSize: 0x2B8 }
-  - { offsetInCU: 0x3B12, offset: 0x3B12, size: 0x8, addend: 0x0, symName: __ZNSt3__124uniform_int_distributionIlEclINS_23mersenne_twister_engineIjLm32ELm624ELm397ELm31ELj2567483615ELm11ELj4294967295ELm7ELj2636928640ELm15ELj4022730752ELm18ELj1812433253EEEEElRT_RKNS1_10param_typeE, symObjAddr: 0x2B8, symBinAddr: 0x100003B94, symSize: 0x17C }
-  - { offsetInCU: 0x65FC, offset: 0x65FC, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x1000038DC, symSize: 0x2B8 }
-  - { offsetInCU: 0x7151, offset: 0x7151, size: 0x8, addend: 0x0, symName: __ZNSt3__125__independent_bits_engineINS_23mersenne_twister_engineIjLm32ELm624ELm397ELm31ELj2567483615ELm11ELj4294967295ELm7ELj2636928640ELm15ELj4022730752ELm18ELj1812433253EEEmE6__evalENS_17integral_constantIbLb1EEE, symObjAddr: 0x434, symBinAddr: 0x100003D10, symSize: 0x1D4 }
-...

@@ -27,11 +27,6 @@ class Config:
     # Paths
     output_base: Path = Path("outputs")
 
-    # LLM
-    llm_model: str = "gpt-4o-mini"
-    llm_max_tokens: int = 1024
-    enable_llm: bool = False
-
     # addr2line
     addr2line_bin: str = "addr2line"
 

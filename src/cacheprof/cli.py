@@ -14,13 +14,12 @@ from cacheprof.utils.logging import setup as setup_logging
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
-@click.option("--llm/--no-llm", default=False, help="Enable or skip LLM explanations.")
 @click.pass_context
-def main(ctx: click.Context, verbose: bool, llm: bool) -> None:
-    """CacheScope — cache locality profiler with AI explanations."""
+def main(ctx: click.Context, verbose: bool) -> None:
+    """CacheLens — cache locality profiler (Python prototype)."""
     setup_logging(verbose)
     ctx.ensure_object(dict)
-    ctx.obj["config"] = Config(verbose=verbose, enable_llm=llm)
+    ctx.obj["config"] = Config(verbose=verbose)
 
 
 @main.command()

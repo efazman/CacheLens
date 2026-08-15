@@ -15,7 +15,7 @@ def write_markdown_report(report: ProfileReport, run_dir: Path) -> Path:
     out_path = run_dir / "report.md"
     lines: list[str] = []
 
-    lines.append(f"# CacheScope Report")
+    lines.append("# CacheLens Report")
     lines.append(f"")
     lines.append(f"**Binary:** `{report.target_binary}`  ")
     lines.append(f"**Mode:** {report.collection_mode.name}  ")
@@ -77,22 +77,11 @@ def write_markdown_report(report: ProfileReport, run_dir: Path) -> Path:
             )
         lines.append("")
 
-    # Diagnoses
-    for i, (hs, diag) in enumerate(zip(report.hotspots, report.diagnoses)):
-        if not diag.summary:
-            continue
-        lines.append(f"### Hotspot #{i+1} — `{hs.location.file}:{hs.location.line}`")
-        lines.append("")
-        lines.append(f"**{diag.summary}**")
-        lines.append("")
-        lines.append(diag.explanation)
-        lines.append("")
-        lines.append(f"> **Suggestion:** {diag.suggestion}")
-        lines.append("")
-        lines.append(f"> Parse OK: {diag.parse_ok}")
-        lines.append("")
-
+    # Source context for each hotspot
+    for i, hs in enumerate(report.hotspots, 1):
         if hs.source_snippet:
+            lines.append(f"### Hotspot #{i} — `{hs.location.file}:{hs.location.line}`")
+            lines.append("")
             lines.append("```cpp")
             lines.append(hs.source_snippet)
             lines.append("```")

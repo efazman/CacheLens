@@ -61,14 +61,4 @@ def _serialize(report: ProfileReport) -> dict:
             for i, hs in enumerate(report.hotspots)
         ],
         "signals": [asdict(s) for s in report.signals],
-        "diagnoses": [
-            {
-                "summary": d.summary,
-                "explanation": d.explanation,
-                "suggestion": d.suggestion,
-                "raw_response": d.raw_response,
-                "parse_ok": d.parse_ok,
-            }
-            for d in report.diagnoses
-        ],
     }
