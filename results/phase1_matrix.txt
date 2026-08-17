@@ -1,6 +1,12 @@
-CacheLens — Phase 1 matrix benchmark measurement
+CacheLens — Phase 1 baseline: matrix loop-order locality measurement
 Date: 2026-08-16
-Tool: stock `perf stat` only. No CacheLens code involved.
+
+What this establishes: a verified before/after wall-clock and LLC
+miss-rate measurement of the matrix_bad (i-j-k) vs matrix_good (i-k-j)
+loop-order pair — the locality bottleneck behind the Phase 1 resume claim.
+
+Measured with stock `perf stat` only — NOT with CacheLens. This is the
+ground truth the profiler will later be validated against.
 
 =============================================================================
 MACHINE SPEC
@@ -8,10 +14,14 @@ MACHINE SPEC
 - AMD Ryzen 5 7600X, 6 cores, Zen 4
 - L3 cache: 32 MiB (single instance)
 - 16 GB DDR5, single-channel (DIMM_A2 only)
-- Ubuntu, kernel.perf_event_paranoid: was 4 at session start (perf stat
+- OS: Ubuntu 26.04 LTS
+- Kernel: 7.0.0-29-generic (uname -r)
+- Compiler: g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+- kernel.perf_event_paranoid: was 4 at session start (perf stat
   failed with "No supported events found"), lowered to 1 via
   `sudo sysctl -w kernel.perf_event_paranoid=1` (session-only, not
-  persisted to /etc/sysctl.conf) before any measurement below.
+  persisted to /etc/sysctl.conf) before any measurement below. Value
+  confirmed at 1 at time of measurement.
 - IBS available (`ibs` in CPU flags) — not used this session.
 
 =============================================================================
