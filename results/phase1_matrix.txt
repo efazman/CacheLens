@@ -1,0 +1,229 @@
+CacheLens — Phase 1 matrix benchmark measurement
+Date: 2026-08-16
+Tool: stock `perf stat` only. No CacheLens code involved.
+
+=============================================================================
+MACHINE SPEC
+=============================================================================
+- AMD Ryzen 5 7600X, 6 cores, Zen 4
+- L3 cache: 32 MiB (single instance)
+- 16 GB DDR5, single-channel (DIMM_A2 only)
+- Ubuntu, kernel.perf_event_paranoid: was 4 at session start (perf stat
+  failed with "No supported events found"), lowered to 1 via
+  `sudo sysctl -w kernel.perf_event_paranoid=1` (session-only, not
+  persisted to /etc/sysctl.conf) before any measurement below.
+- IBS available (`ibs` in CPU flags) — not used this session.
+
+=============================================================================
+STEP 1 — PERF SANITY CHECK (after paranoid=1 fix)
+=============================================================================
+$ perf stat -e cache-misses,cache-references,instructions,cycles /bin/true
+
+ Performance counter stats for '/bin/true':
+
+            14,705      cache-misses
+            71,832      cache-references
+           749,330      instructions
+           994,660      cycles
+
+       0.000554712 seconds time elapsed
+
+       0.000586000 seconds user
+       0.000000000 seconds sys
+
+=============================================================================
+STEP 2 — BENCHMARK SIZING
+=============================================================================
+benchmarks/matrix_bad.cpp and benchmarks/matrix_good.cpp were hardcoded to
+N=1024 (working set = 3 * 1024^2 * 8 bytes = 25,165,824 bytes ~= 24 MiB,
+which fits inside the 32 MiB L3 and collapses the good/bad separation).
+
+Changed both to N=2400:
+  Per matrix:    2400^2 * 8 bytes        = 46,080,000 bytes  ~= 43.95 MiB
+  Three matrices: 3 * 46,080,000 bytes   = 138,240,000 bytes ~= 131.8 MiB
+  Working set / L3 ratio: 131.8 MiB / 32 MiB ~= 4.12x
+
+=============================================================================
+STEP 3 — VECTORIZATION CHECK
+=============================================================================
+Built both at -O2 with -fopt-info-vec-optimized:
+
+  matrix_bad.cpp:41:31: optimized: loop vectorized using 16 byte vectors
+  (matrix_good.cpp: no vectorization message)
+
+Disassembly (objdump -d -M intel) of the -O2 binaries confirmed:
+  - matrix_bad inner k-loop: vectorized. Uses `mulpd` (packed multiply),
+    processing 2 k-iterations per pass. The contiguous A[i][k] access
+    became a single packed load (`movupd`). The strided B[k][j] access
+    (stride = N*8 = 19200 bytes) is built from two SEPARATE scalar loads
+    (`movsd` + `movhpd` at +0x4b00) packed into an xmm register — there is
+    no gather instruction, so the number of distinct cache lines touched
+    for B is unchanged, but the arithmetic/loop overhead is halved
+    relative to a true scalar build.
+  - matrix_good inner j-loop: NOT vectorized (stayed fully scalar —
+    movsd/mulsd/addsd, one double at a time). GCC could not prove
+    A/B/C don't alias (no `restrict`), which blocked auto-vectorization
+    of the read-modify-write into C.
+
+Decision: since matrix_bad's hot loop was vectorized at -O2 and matrix_good's
+was not, this is an asymmetric confound relative to what the source implies
+("naive scalar i-j-k" vs "cache-friendly scalar i-k-j"). Rebuilt both at
+-O1. Confirmed via -fopt-info-vec-optimized (no messages for either) and
+objdump (zero occurrences of mulpd/movupd/movdqa/movdqu in either -O1
+binary) that both are fully scalar at -O1.
+
+Settled on: -O1 for both matrix_bad and matrix_good.
+Build commands:
+  g++ -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_bad matrix_bad.cpp
+  g++ -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_good matrix_good.cpp
+
+=============================================================================
+STEP 4 — MEASUREMENT
+=============================================================================
+Command per binary, run individually 5 times (not perf's internal -r
+aggregation) so raw per-run values could be captured for manual mean/stdev:
+
+  perf stat -x, -e cache-misses,cache-references,instructions,cycles \
+      -o <file> --append ./<binary>
+
+Scope note (do not blur): perf stat wraps the entire process from exec to
+exit — this includes init() (heap allocation of 3 arrays, ~11.52M rand()
+calls to fill A and B, and a memset of C), not just the multiply hot loop.
+Wall-clock (both the shell `time` command and perf's own elapsed-time
+field) covers the SAME whole-process scope as the perf counters — they are
+not mismatched in scope. Measured in isolation, init() takes ~0.071s
+(3 runs: 0.0709s, 0.0712s, 0.0725s), which is ~0.6% of matrix_bad's total
+wall time and ~1.3% of matrix_good's — small but not zero, and identical
+between the two binaries since init() is unmodified shared code.
+
+--- Raw per-run output: matrix_bad (5 runs) ---
+# started on Sun Aug 16 22:37:25 2026
+
+2236293322,,cache-misses,11435743224,100.00,,
+25519129262,,cache-references,11435743224,100.00,,
+97896348346,,instructions,11435743224,100.00,,
+61735703580,,cycles,11435743224,100.00,,
+# started on Sun Aug 16 22:37:36 2026
+
+2381076416,,cache-misses,11361402401,100.00,,
+25704117595,,cache-references,11361402401,100.00,,
+97895354848,,instructions,11361402401,100.00,,
+61742319090,,cycles,11361402401,100.00,,
+# started on Sun Aug 16 22:37:47 2026
+
+2256473968,,cache-misses,11427670865,100.00,,
+25589243542,,cache-references,11427670865,100.00,,
+97898695237,,instructions,11427670865,100.00,,
+62133606236,,cycles,11427670865,100.00,,
+# started on Sun Aug 16 22:37:59 2026
+
+2293923979,,cache-misses,11438602745,100.00,,
+25655642972,,cache-references,11438602745,100.00,,
+97897891969,,instructions,11438602745,100.00,,
+62193522710,,cycles,11438602745,100.00,,
+# started on Sun Aug 16 22:38:10 2026
+
+2344752993,,cache-misses,11388898243,100.00,,
+25653727178,,cache-references,11388898243,100.00,,
+97892906967,,instructions,11388898243,100.00,,
+61924353386,,cycles,11388898243,100.00,,
+
+(CSV fields: value,unit,event,time-running-ns,percent-enabled,,)
+
+--- Raw per-run output: matrix_good (5 runs) ---
+# started on Sun Aug 16 22:38:22 2026
+
+84554235,,cache-misses,5445342718,100.00,,
+6880215818,,cache-references,5445342718,100.00,,
+111631647943,,instructions,5445342718,100.00,,
+29612908158,,cycles,5445342718,100.00,,
+# started on Sun Aug 16 22:38:27 2026
+
+84306545,,cache-misses,5434981616,100.00,,
+6871040083,,cache-references,5434981616,100.00,,
+111630721721,,instructions,5434981616,100.00,,
+29540384213,,cycles,5434981616,100.00,,
+# started on Sun Aug 16 22:38:33 2026
+
+83764143,,cache-misses,5449934114,100.00,,
+6859657637,,cache-references,5449934114,100.00,,
+111635892358,,instructions,5449934114,100.00,,
+29633845598,,cycles,5449934114,100.00,,
+# started on Sun Aug 16 22:38:38 2026
+
+84357269,,cache-misses,5427471774,100.00,,
+6874988175,,cache-references,5427471774,100.00,,
+111637190239,,instructions,5427471774,100.00,,
+29505663871,,cycles,5427471774,100.00,,
+# started on Sun Aug 16 22:38:44 2026
+
+84708327,,cache-misses,5477346216,100.00,,
+6866734590,,cache-references,5477346216,100.00,,
+111633098851,,instructions,5477346216,100.00,,
+29770492668,,cycles,5477346216,100.00,,
+
+--- Cross-check: perf's own -r 5 aggregation (matrix_bad) ---
+$ perf stat -r 5 -e cache-misses,cache-references,instructions,cycles ./matrix_bad
+
+ Performance counter stats for './matrix_bad' (5 runs):
+
+     2,234,101,870      cache-misses                          ( +-  0.60% )
+    25,541,430,247      cache-references                      ( +-  0.09% )
+    97,894,955,655      instructions                          ( +-  0.00% )
+    61,871,947,184      cycles                                ( +-  0.10% )
+
+      11.404165445 +- 0.005532738 seconds time elapsed  ( +-  0.05% )
+
+--- Cross-check: perf's own -r 5 aggregation (matrix_good) ---
+$ perf stat -r 5 -e cache-misses,cache-references,instructions,cycles ./matrix_good
+
+ Performance counter stats for './matrix_good' (5 runs):
+
+        85,234,362      cache-misses                          ( +-  0.23% )
+     6,896,835,477      cache-references                      ( +-  0.10% )
+   111,633,554,387      instructions                          ( +-  0.00% )
+    29,417,392,001      cycles                                ( +-  0.17% )
+
+       5.428045129 +- 0.014714081 seconds time elapsed  ( +-  0.27% )
+
+Note: the two -r 5 cross-check runs above were separate invocations from the
+5 individually-scripted runs used for the mean/stdev table below; both sets
+agree closely (bad ~11.40-11.45s, good ~5.43-5.45s), confirming run-to-run
+stability.
+
+--- Computed mean / standard deviation (from the 5 individually-scripted
+    runs, sample stdev, n=5) ---
+
+matrix_bad:
+  cache-misses:      mean = 2,302,504,135.6   stdev = 60,280,254.8   (2.62%)
+  cache-references:  mean = 25,624,372,109.8  stdev = 71,604,822.7   (0.28%)
+  instructions:      mean = 97,896,239,473.4  stdev = 2,272,747.8    (0.00%)
+  cycles:             mean = 61,945,901,000.4  stdev = 213,683,537.0 (0.34%)
+  wall time (perf time-running, ns->s): mean = 11.4105 s  stdev = 0.0311 s
+  LLC miss rate (misses/references) per run: 8.76%, 9.26%, 8.82%, 8.94%, 9.14%
+  LLC miss rate: mean = 8.99%  stdev = 0.212 percentage points
+
+matrix_good:
+  cache-misses:      mean = 84,338,103.8      stdev = 358,668.4      (0.43%)
+  cache-references:  mean = 6,870,527,260.6   stdev = 7,851,177.6    (0.11%)
+  instructions:      mean = 111,633,710,222.4 stdev = 2,758,176.2    (0.00%)
+  cycles:             mean = 29,612,658,901.6  stdev = 102,508,540.2  (0.35%)
+  wall time (perf time-running, ns->s): mean = 5.4470 s  stdev = 0.0175 s
+  LLC miss rate (misses/references) per run: 1.23%, 1.23%, 1.22%, 1.23%, 1.23%
+  LLC miss rate: mean = 1.23%  stdev = 0.004 percentage points
+
+=============================================================================
+STEP 5 — SEPARATION
+=============================================================================
+  wall-time speedup (bad/good):   11.4105 / 5.4470  = 2.09x
+  cycles speedup (bad/good):      61,945,901,000 / 29,612,658,902 = 2.09x
+  LLC miss rate ratio (bad/good): 8.99% / 1.23%     = 7.31x
+
+Both wall-clock and miss-rate show substantial, consistent separation
+(low run-to-run variance, no overlap between the two distributions).
+Verification passed; proceeded to output.
+
+=============================================================================
+STEP 6 — SUMMARY
+=============================================================================
+See chat for the formatted before/after table and resume bullet.

@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstring>
 
-static constexpr int N = 1024;
+static constexpr int N = 2400;
 
 // Heap-allocate to keep stack small and avoid BSS-section weirdness
 // that can confuse some perf setups.

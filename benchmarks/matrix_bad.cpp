@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <cstring>
 
-static constexpr int N = 1024;
+static constexpr int N = 2400;
 
 static double* A;
 static double* B;
