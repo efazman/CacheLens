@@ -1,0 +1,164 @@
+================================================================
+ENVIRONMENT BLOCK — Gate 5 concentration ranking
+Captured (UTC): 2026-08-18T06:23:35Z
+================================================================
+--- scaling_governor (per core) ---
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor: powersave
+--- /proc/loadavg ---
+0.68 0.54 0.38 1/1136 41954
+--- processes above 1% CPU ---
+    PID COMMAND         %CPU
+   2548 gnome-shell      5.7
+  39408 claude           3.1
+  40145 firefox          1.8
+--- transparent hugepage ---
+always [madvise] never
+--- perf_event_paranoid ---
+1
+--- perf_event_max_sample_rate ---
+79000
+--- kernel ---
+Linux efaz-rahman-System-Product-Name 7.0.0-29-generic #29-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:52:35 UTC 2026 x86_64 GNU/Linux
+--- compiler ---
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+--- build flags ---
+CXXFLAGS := -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17
+--- core frequency (MHz) ---
+cpu MHz		: 5232.844
+cpu MHz		: 3616.262
+cpu MHz		: 4997.217
+cpu MHz		: 2991.546
+cpu MHz		: 4510.765
+cpu MHz		: 4020.870
+cpu MHz		: 5161.042
+cpu MHz		: 4911.381
+cpu MHz		: 2991.546
+cpu MHz		: 3965.246
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+
+================================================================
+MEASUREMENT — matrix_bad
+================================================================
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+kernel perf_event_max_sample_rate: 79000/sec; per-event target: 47400/sec (60%)
+child exited, status 0
+calibration[miss]: value=2276795800 wall=11.3999s rate=199720617/sec
+calibration[access]: value=25578644324 wall=11.3999s rate=2243759684/sec
+derived period[miss]: 4217
+derived period[access]: 47339
+child exited, status 0
+
+=== event: miss ===
+requested period: 4217
+aggregate: 2280618988, multiplexing fraction: 1.0000
+samples captured: 540815
+record histogram: sample=540815 lost_records=0 lost_events=0 exit=0 other=0
+IP range: [0x401230, 0xffffffffa751f856]
+bucket[target executable]: 540722 (99.9828%)
+bucket[shared library / other user mapping]: 3 (0.0006%)
+bucket[kernel space]: 90 (0.0166%)
+bucket[unmapped / unclassifiable]: 0 (0.0000%)
+distinct kernel-space IPs (3): 0xffffffffa5e00ef0 0xffffffffa5e00f03 0xffffffffa751f856
+attributed: 540722, unattributed: 0 (0.0000%)
+
+=== event: access ===
+requested period: 47339
+aggregate: 25804904587, multiplexing fraction: 1.0000
+samples captured: 545108
+record histogram: sample=545108 lost_records=0 lost_events=0 exit=0 other=0
+IP range: [0x401230, 0xffffffffa7520315]
+bucket[target executable]: 544982 (99.9769%)
+bucket[shared library / other user mapping]: 15 (0.0028%)
+bucket[kernel space]: 111 (0.0204%)
+bucket[unmapped / unclassifiable]: 0 (0.0000%)
+distinct kernel-space IPs (5): 0xffffffffa5e00b90 0xffffffffa5e00ef0 0xffffffffa5e00f03 0xffffffffa751f856 0xffffffffa7520315
+attributed: 544982, unattributed: 0 (0.0000%)
+
+period scale (miss/access): 4217 / 47339 = 0.089081
+
+=== concentration ranking (Wilson lower bound, 95%, min 30 access samples) ===
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=225682 access=57109  concentration=0.352028  wilson_lb=0.352007
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:42  miss=55 access=55  concentration=0.089081  wilson_lb=0.083265
+  #3  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:41  miss=61 access=71  concentration=0.076534  wilson_lb=0.067682
+  #4  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=314923 access=487714  concentration=0.057521  wilson_lb=0.057401
+insufficient samples (< 30 access samples), excluded from ranking (3 sites):
+  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:28  miss=0 access=1
+  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:30  miss=1 access=18
+  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:31  miss=0 access=14
+
+=== raw miss-count ranking (for comparison) ===
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=314923
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=225682
+  #3  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:41  miss=61
+  #4  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:42  miss=55
+  #5  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:30  miss=1
+
+================================================================
+MEASUREMENT — matrix_good
+================================================================
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+kernel perf_event_max_sample_rate: 79000/sec; per-event target: 47400/sec (60%)
+child exited, status 0
+calibration[miss]: value=79098953 wall=5.4954s rate=14393592/sec
+calibration[access]: value=6911217941 wall=5.4954s rate=1257630428/sec
+derived period[miss]: 307
+derived period[access]: 26539
+child exited, status 0
+
+=== event: miss ===
+requested period: 307
+aggregate: 89344746, multiplexing fraction: 1.0000
+samples captured: 291025
+record histogram: sample=291025 lost_records=0 lost_events=0 exit=0 other=0
+IP range: [0x401230, 0xffffffffa751f851]
+bucket[target executable]: 290906 (99.9591%)
+bucket[shared library / other user mapping]: 49 (0.0168%)
+bucket[kernel space]: 70 (0.0241%)
+bucket[unmapped / unclassifiable]: 0 (0.0000%)
+distinct kernel-space IPs (9): 0xffffffffa5e00005 0xffffffffa5e00248 0xffffffffa5e00b90 0xffffffffa5e00ba9 0xffffffffa5e00ef0 0xffffffffa5e00efe 0xffffffffa5e00f03 0xffffffffa751ba43 0xffffffffa751f851
+attributed: 290906, unattributed: 0 (0.0000%)
+
+=== event: access ===
+requested period: 26539
+aggregate: 6855138492, multiplexing fraction: 1.0000
+samples captured: 258304
+record histogram: sample=258304 lost_records=0 lost_events=0 exit=0 other=0
+IP range: [0x401228, 0xffffffffa7520793]
+bucket[target executable]: 258199 (99.9594%)
+bucket[shared library / other user mapping]: 29 (0.0112%)
+bucket[kernel space]: 76 (0.0294%)
+bucket[unmapped / unclassifiable]: 0 (0.0000%)
+distinct kernel-space IPs (8): 0xffffffffa5e00b90 0xffffffffa5e00ef0 0xffffffffa5e00f03 0xffffffffa751ba41 0xffffffffa751ba43 0xffffffffa751f856 0xffffffffa7520315 0xffffffffa7520793
+attributed: 258199, unattributed: 0 (0.0000%)
+
+period scale (miss/access): 307 / 26539 = 0.011568
+
+=== concentration ranking (Wilson lower bound, 95%, min 30 access samples) ===
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:43  miss=124951 access=22810  concentration=0.063368  wilson_lb=0.063358
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:40  miss=125 access=152  concentration=0.009513  wilson_lb=0.008721
+  #3  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:42  miss=165822 access=235186  concentration=0.008156  wilson_lb=0.008135
+  #4  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:30  miss=2 access=32  concentration=0.000723  wilson_lb=0.000200
+insufficient samples (< 30 access samples), excluded from ranking (1 sites):
+  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:31  miss=6 access=19
+
+=== raw miss-count ranking (for comparison) ===
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:42  miss=165822
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:43  miss=124951
+  #3  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:40  miss=125
+  #4  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:31  miss=6
+  #5  /home/efaz-rahman/CacheLens/benchmarks/matrix_good.cpp:30  miss=2
+

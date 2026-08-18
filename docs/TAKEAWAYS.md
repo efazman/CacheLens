@@ -7,6 +7,41 @@ back it up if asked to go deeper.
 
 ---
 
+## Wilson's formula assumes p in [0,1]; two independently-periodized events don't guarantee it
+
+**When:** Gate 5, first real concentration-ranking run against matrix_bad, 2026-08-18.
+
+**The bug:** `wilson_lower_bound(m, n, z)` computed `p = m/n` and took `sqrt(p*(1-p)/n + ...)`
+with no guard. On the first real run, matrix_bad's line 44 printed `wilson_lb=-nan`. Cause: at
+that site, `m` (miss samples, period 4217) was 225,682 and `n` (access samples, period 47,339)
+was 57,109 — `m > n`, so `p = 3.95`, so `p*(1-p)` went negative, so the sqrt argument went
+negative, so the whole expression became NaN.
+
+**Why this isn't corruption, and why it's still a real bug:** `m > n` at a single site is
+completely expected once the two events use different periods (an explicit Gate 5 requirement)
+— misses get sampled roughly 11x more densely than accesses at this run's calibrated periods,
+so raw miss-sample counts routinely exceed raw access-sample counts at hot sites even though
+the *true* miss count can never exceed the *true* access count. The period-scaling step
+downstream corrects this back into a sane concentration (0.35, i.e. 35%) — but the Wilson
+formula, borrowed as-is from a textbook binomial-proportion setting where `p = m/n` is
+guaranteed to be in [0,1] by construction, has no such guarantee here and silently produces
+NaN outside its domain instead of erroring loudly.
+
+**The fix:** clamp the variance term (`p*(1-p)/n + z²/4n²`) at 0 before the `sqrt`, with a
+comment explaining *why* `p>1` is expected rather than pretending it can't happen. This doesn't
+change any site's ranking — it only stops a legitimate, foreseeable input from silently
+producing a value that would have `NaN`-poisoned every downstream comparison it touched
+(`NaN` compares false against everything, so a `std::sort` with a NaN in it silently misbehaves
+rather than crashing).
+
+**One-line takeaway:** borrowing a formula from a domain with an implicit precondition (here:
+"these two counts come from the same trial pool") into a domain where that precondition doesn't
+hold (independently-periodized sampling) needs an explicit guard at the boundary where the
+precondition can break — "the math will just work" is exactly the assumption that produces a
+silent NaN instead of a loud error.
+
+---
+
 ## A null result is still a result: the governor test corroborates the IPC evidence
 
 **When:** Phase 1 drift investigation, governor isolation (Set 1 vs Set 2), 2026-08-18.
