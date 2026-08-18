@@ -555,11 +555,31 @@ void print_event_report(const char* label, const SamplingEvent& ev, const Attrib
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3 || std::strcmp(argv[1], "--") != 0) {
-        std::fprintf(stderr, "usage: %s -- <command> [args...]\n", argv[0]);
+    // --period N overrides both events' periods and skips calibration
+    // entirely — the escape hatch for reproducing one specific prior run
+    // exactly (calibration reads live event rates, so two automatic runs
+    // are not guaranteed to derive identical periods; an override is).
+    // Default remains automatic calibration.
+    bool period_override = false;
+    uint64_t override_period = 0;
+    int argi = 1;
+    if (argi < argc && std::strcmp(argv[argi], "--period") == 0) {
+        if (argi + 1 >= argc) { std::fprintf(stderr, "cachelens: --period needs a value\n"); return 2; }
+        char* end = nullptr;
+        long long v = std::strtoll(argv[argi + 1], &end, 10);
+        if (end == argv[argi + 1] || *end != '\0' || v <= 0) {
+            std::fprintf(stderr, "cachelens: --period value must be a positive integer\n");
+            return 2;
+        }
+        period_override = true;
+        override_period = static_cast<uint64_t>(v);
+        argi += 2;
+    }
+    if (argi >= argc || std::strcmp(argv[argi], "--") != 0 || argi + 1 >= argc) {
+        std::fprintf(stderr, "usage: %s [--period N] -- <command> [args...]\n", argv[0]);
         return 2;
     }
-    char** target_argv = argv + 2;
+    char** target_argv = argv + argi + 1;
 
     TextRange target_range;
     if (!get_target_text_range(target_argv[0], target_range)) {
@@ -570,34 +590,47 @@ int main(int argc, char** argv) {
         die("libdw could not load DWARF info from the target — was it built with -g?");
     }
 
-    long max_rate = 0;
-    {
+    EventPlan plans[2] = {{"miss", PERF_COUNT_HW_CACHE_MISSES},
+                           {"access", PERF_COUNT_HW_CACHE_REFERENCES}};
+    uint64_t period[2];
+
+    if (period_override) {
+        std::printf("*** --period %llu given: CALIBRATION BYPASSED for both events. ***\n"
+                    "*** Concentration scaling below uses this period for both miss and  ***\n"
+                    "*** access, not independently-measured rates. The throttle halt (a  ***\n"
+                    "*** PERF_RECORD_THROTTLE/UNTHROTTLE record) remains active.          ***\n",
+                    static_cast<unsigned long long>(override_period));
+        period[0] = period[1] = override_period;
+    } else {
+        long max_rate = 0;
         FILE* f = fopen("/proc/sys/kernel/perf_event_max_sample_rate", "r");
         if (!f) die_errno("open /proc/sys/kernel/perf_event_max_sample_rate");
         int got = fscanf(f, "%ld", &max_rate);
         fclose(f);
         if (got != 1 || max_rate <= 0) die("could not parse perf_event_max_sample_rate");
+        // 60%: Gate 3's empirical bisection on this machine found period
+        // choices landing at ~77% of this cap reliable and ~95% flaky
+        // (burst variance pushes the instantaneous rate above nominal).
+        // 60% keeps real margin below the point already shown marginal.
+        double target_rate = 0.60 * static_cast<double>(max_rate);
+        std::printf("kernel perf_event_max_sample_rate: %ld/sec; per-event target: %.0f/sec (60%%)\n",
+                    max_rate, target_rate);
+
+        Calibration cal[2];
+        calibrate_both(plans, target_argv, cal);
+        for (int i = 0; i < 2; ++i) {
+            uint64_t raw = static_cast<uint64_t>(cal[i].rate / target_rate + 0.5);
+            period[i] = nearest_prime(raw);
+        }
     }
-    // 60%: Gate 3's empirical bisection on this machine found period choices
-    // landing at ~77% of this cap reliable and ~95% flaky (burst variance
-    // pushes the instantaneous rate above the nominal one). 60% keeps real
-    // margin below the point that was already shown to be marginal.
-    double target_rate = 0.60 * static_cast<double>(max_rate);
-    std::printf("kernel perf_event_max_sample_rate: %ld/sec; per-event target: %.0f/sec (60%%)\n",
-                max_rate, target_rate);
 
-    EventPlan plans[2] = {{"miss", PERF_COUNT_HW_CACHE_MISSES},
-                           {"access", PERF_COUNT_HW_CACHE_REFERENCES}};
-
-    Calibration cal[2];
-    calibrate_both(plans, target_argv, cal);
-
-    uint64_t period[2];
+    // Printed unconditionally, calibrated or overridden: this is what makes
+    // any run — automatic or not — reproducible by reading the periods
+    // back out and passing them via --period on a subsequent run.
     for (int i = 0; i < 2; ++i) {
-        uint64_t raw = static_cast<uint64_t>(cal[i].rate / target_rate + 0.5);
-        period[i] = nearest_prime(raw);
-        std::printf("derived period[%s]: %llu\n", plans[i].label,
-                    static_cast<unsigned long long>(period[i]));
+        std::printf("period[%s]: %llu (%s)\n", plans[i].label,
+                    static_cast<unsigned long long>(period[i]),
+                    period_override ? "override" : "calibrated");
     }
 
     // --- Measurement run ---

@@ -17,15 +17,25 @@ that site, `m` (miss samples, period 4217) was 225,682 and `n` (access samples, 
 was 57,109 — `m > n`, so `p = 3.95`, so `p*(1-p)` went negative, so the sqrt argument went
 negative, so the whole expression became NaN.
 
-**Why this isn't corruption, and why it's still a real bug:** `m > n` at a single site is
-completely expected once the two events use different periods (an explicit Gate 5 requirement)
-— misses get sampled roughly 11x more densely than accesses at this run's calibrated periods,
-so raw miss-sample counts routinely exceed raw access-sample counts at hot sites even though
-the *true* miss count can never exceed the *true* access count. The period-scaling step
-downstream corrects this back into a sane concentration (0.35, i.e. 35%) — but the Wilson
-formula, borrowed as-is from a textbook binomial-proportion setting where `p = m/n` is
-guaranteed to be in [0,1] by construction, has no such guarantee here and silently produces
-NaN outside its domain instead of erroring loudly.
+**Root cause, stated plainly: this is a statistical artifact, not data corruption.** With two
+events sampled at different periods, `m` and `n` are not on equal footing as raw counts — a
+*scaled* miss estimate (`m * period_miss`) can exceed a *scaled* access estimate
+(`n * period_access`) purely through the combination of differing periods and ordinary sampling
+variability, with no ring-buffer bug, no misattribution, and no lost/duplicated records
+involved anywhere. Two distinct ways this shows up: at a **low-support site** near the support
+gate's floor, small-n sampling noise alone can push `m` above `n` even when the true
+concentration is unremarkable. At the **specific site that actually triggered this** (matrix_bad
+line 44), it was not noise — `m`=225,682 and `n`=57,109 are both large, and `m > n` there is a
+*deterministic* consequence of a genuinely high true concentration (~35%) combined with the
+miss period (4217) sampling ~11x more densely than the access period (47,339): raw ratio
+`m/n` ≈ true concentration × density ratio ≈ 0.35 × 11.2 ≈ 3.9, matching what was observed. Both
+mechanisms are real and both are artifacts of comparing two differently-sampled counts before
+scaling — a reader of this entry should not conclude the ring buffer, the drain loop, or the
+classification was broken; none of them were. The period-scaling step downstream already
+corrects `m/n` back into a sane concentration (0.35) — but the Wilson formula, borrowed as-is
+from a textbook binomial-proportion setting where `p = m/n` is guaranteed to be in [0,1] by
+construction, has no such guarantee here and silently produced NaN outside its domain instead
+of erroring loudly.
 
 **The fix:** clamp the variance term (`p*(1-p)/n + z²/4n²`) at 0 before the `sqrt`, with a
 comment explaining *why* `p>1` is expected rather than pretending it can't happen. This doesn't
