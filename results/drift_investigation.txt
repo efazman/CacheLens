@@ -1,0 +1,196 @@
+================================================================
+ENVIRONMENT BLOCK — label: performance-governor-quiet
+Captured (UTC): 2026-08-18T06:02:40Z
+================================================================
+--- scaling_governor (per core) ---
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor: performance
+/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor: performance
+--- /proc/loadavg ---
+0.26 0.31 0.35 1/864 39712
+--- processes above 1% CPU ---
+    PID COMMAND         %CPU
+  39408 claude           8.1
+   2548 gnome-shell      6.2
+--- transparent hugepage ---
+always [madvise] never
+--- perf_event_paranoid ---
+1
+--- kernel ---
+Linux efaz-rahman-System-Product-Name 7.0.0-29-generic #29-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:52:35 UTC 2026 x86_64 GNU/Linux
+--- compiler ---
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+--- build flags (benchmarks/Makefile) ---
+CXXFLAGS := -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17
+--- core frequency, sampled before run (MHz) ---
+cpu MHz		: 5239.611
+cpu MHz		: 5239.897
+cpu MHz		: 5236.686
+cpu MHz		: 5246.999
+cpu MHz		: 5229.468
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 4355.998
+cpu MHz		: 5224.458
+cpu MHz		: 5239.928
+
+================================================================
+MEASUREMENT — label: performance-governor-quiet
+================================================================
+--- matrix_bad ---
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+
+ Performance counter stats for '/home/efaz-rahman/CacheLens/benchmarks/matrix_bad' (5 runs):
+
+     2,271,162,723      cache-misses                                                            ( +-  0.66% )
+    25,631,808,285      cache-references                                                        ( +-  0.05% )
+    97,895,694,793      instructions                                                            ( +-  0.00% )
+    62,300,863,829      cycles                                                                  ( +-  0.08% )
+
+      11.462484105 +- 0.009254758 seconds time elapsed  ( +-  0.08% )
+
+
+--- matrix_good ---
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+
+ Performance counter stats for '/home/efaz-rahman/CacheLens/benchmarks/matrix_good' (5 runs):
+
+        84,693,679      cache-misses                                                            ( +-  0.17% )
+     6,936,596,399      cache-references                                                        ( +-  0.05% )
+   111,634,123,804      instructions                                                            ( +-  0.00% )
+    29,891,495,647      cycles                                                                  ( +-  0.12% )
+
+       5.499630884 +- 0.006665249 seconds time elapsed  ( +-  0.12% )
+
+
+--- core frequency, sampled after run (MHz) ---
+cpu MHz		: 4770.082
+cpu MHz		: 5439.851
+cpu MHz		: 5388.958
+cpu MHz		: 4227.399
+cpu MHz		: 4273.871
+cpu MHz		: 2991.546
+cpu MHz		: 4350.575
+cpu MHz		: 4350.515
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+
+================================================================
+ENVIRONMENT BLOCK — label: powersave-governor-quiet
+Captured (UTC): 2026-08-18T06:05:48Z
+================================================================
+--- scaling_governor (per core) ---
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor: powersave
+/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor: powersave
+--- /proc/loadavg ---
+0.15 0.35 0.36 1/863 40064
+--- processes above 1% CPU ---
+    PID COMMAND         %CPU
+   2548 gnome-shell      6.1
+  39408 claude           4.1
+--- transparent hugepage ---
+always [madvise] never
+--- perf_event_paranoid ---
+1
+--- kernel ---
+Linux efaz-rahman-System-Product-Name 7.0.0-29-generic #29-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:52:35 UTC 2026 x86_64 GNU/Linux
+--- compiler ---
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+--- build flags (benchmarks/Makefile) ---
+CXXFLAGS := -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17
+--- core frequency, sampled before run (MHz) ---
+cpu MHz		: 2991.546
+cpu MHz		: 5239.772
+cpu MHz		: 4357.276
+cpu MHz		: 5239.866
+cpu MHz		: 5239.945
+cpu MHz		: 5202.297
+cpu MHz		: 2991.546
+cpu MHz		: 4804.531
+cpu MHz		: 5371.926
+cpu MHz		: 5217.552
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+
+================================================================
+MEASUREMENT — label: powersave-governor-quiet
+================================================================
+--- matrix_bad ---
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+
+ Performance counter stats for '/home/efaz-rahman/CacheLens/benchmarks/matrix_bad' (5 runs):
+
+     2,292,711,017      cache-misses                                                            ( +-  0.93% )
+    25,648,475,178      cache-references                                                        ( +-  0.07% )
+    97,894,178,635      instructions                                                            ( +-  0.00% )
+    62,334,292,996      cycles                                                                  ( +-  0.13% )
+
+      11.470591170 +- 0.014504781 seconds time elapsed  ( +-  0.13% )
+
+
+--- matrix_good ---
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+C[0][0] = 608.605221
+
+ Performance counter stats for '/home/efaz-rahman/CacheLens/benchmarks/matrix_good' (5 runs):
+
+        84,868,682      cache-misses                                                            ( +-  0.08% )
+     6,938,037,854      cache-references                                                        ( +-  0.05% )
+   111,637,372,367      instructions                                                            ( +-  0.00% )
+    29,915,980,411      cycles                                                                  ( +-  0.08% )
+
+       5.505822271 +- 0.004957500 seconds time elapsed  ( +-  0.09% )
+
+
+--- core frequency, sampled after run (MHz) ---
+cpu MHz		: 5241.187
+cpu MHz		: 2991.546
+cpu MHz		: 5188.106
+cpu MHz		: 4127.254
+cpu MHz		: 3447.588
+cpu MHz		: 2991.546
+cpu MHz		: 5439.847
+cpu MHz		: 2991.546
+cpu MHz		: 3271.501
+cpu MHz		: 2991.546
+cpu MHz		: 2991.546
+cpu MHz		: 3480.305
+

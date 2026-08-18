@@ -7,6 +7,84 @@ back it up if asked to go deeper.
 
 ---
 
+## A null result is still a result: the governor test corroborates the IPC evidence
+
+**When:** Phase 1 drift investigation, governor isolation (Set 1 vs Set 2), 2026-08-18.
+
+**The finding:** `performance` vs `powersave` governor changed wall time by 0.07% (bad) and
+0.11% (good) — indistinguishable from noise. That's not "the test found nothing" — it's
+evidence about *what kind of bottleneck this is*. If the matrix-multiply pair's speedup came
+from a compute-bound component (more arithmetic throughput, better pipelining), clock frequency
+would matter, and `performance` vs `powersave` would show a real gap. It didn't, which means
+core frequency isn't the constraint — consistent with, and independent corroboration of, the
+IPC evidence already on record (cycles/instruction of 0.636 vs 0.268, i.e. IPC ~1.58 vs ~3.77):
+matrix_bad isn't slow because the CPU is under-clocked, it's slow because it spends its cycles
+stalled waiting on memory, and clocking the core higher doesn't un-stall a cache miss.
+
+**Why it's worth keeping:** a 0% result from one experiment (governor) and a 3-6x IPC gap from
+a completely different measurement (cycles/instruction) point the same direction through two
+independent methods. That agreement is stronger evidence than either alone, and it only shows
+up if you report the null result instead of treating "no effect" as "nothing to write down."
+
+---
+
+## Background load biases this measurement in the favorable direction
+
+**When:** Phase 1 drift investigation, quiet-vs-noisy comparison, 2026-08-18.
+
+**The finding:** the noisy run (Firefox + VSCode competing for L3) reported a *larger* speedup
+than the quiet one — 2.20x vs 2.08x — not a smaller one. This isn't symmetric noise. L3
+contention from other processes degrades matrix_bad (which already thrashes the cache) more
+than matrix_good (which mostly doesn't need much L3 to begin with), so background load widens
+the gap between them rather than just adding jitter to both. The direction matters: anyone
+reproducing this benchmark on a machine they haven't quiesced will tend to see a *better*
+number than the true one, not a worse one — the error is one-directional and favorable, which
+is exactly the kind of error that survives unnoticed because nobody double-checks a result that
+already looks good.
+
+**Rule going forward:** state this plainly wherever the speedup number is reported (README,
+Gate 6) — not as a footnote, since a one-directional bias toward the more impressive number is
+the one a reader has the least reason to go looking for on their own.
+
+---
+
+## A performance result without a recorded environment isn't reproducible — not even by you
+
+**When:** Phase 1 drift investigation, 2026-08-18. Rebuilding the benchmarks for Gate 4
+(same flags, same source) produced numbers ~5-10% off Phase 1's original measurement, in the
+*favorable* direction (2.09x -> 2.20x speedup). Investigated rather than adopted.
+
+**The finding:** the drift traced entirely to background load (Firefox + VSCode + their
+subprocesses, drawing 20-30%+ combined CPU) present during the later run and absent — or at
+least unrecorded — during Phase 1. Isolated with a controlled comparison: same quiet machine,
+`performance` vs `powersave` governor, n=5 each. Governor effect: +0.07%/+0.11%, noise-level.
+Quiet-machine result vs. Phase 1's original: +0.46%/+0.97%, within normal run-to-run variance.
+The ~10% "regression" was almost entirely explained by two browser/editor processes that had
+nothing to do with the benchmark.
+
+**Why this couldn't be resolved faster than it was:** Phase 1's result file recorded the CPU,
+L3 size, RAM config, kernel, and `perf_event_paranoid` — real machine facts — but not the
+*load* the machine was under at measurement time. That's the gap: a performance number is a
+measurement of a system under some condition, and "condition" includes everything else
+competing for the same cache and cores, not just the hardware spec sheet. Without that
+recorded, there was no way to tell "the machine changed" from "the code changed" after the
+fact — including for the person who ran the original measurement.
+
+**The check that mattered first:** instruction-retired counts between the drifted and original
+runs matched to within 0.04% (matrix_bad) and 0.008% (matrix_good) — while cycles-per-
+instruction had moved 5-10%. That one comparison is what separated "the binaries changed"
+(it didn't — same instructions, same count) from "the machine changed" (cycles for the same
+instructions went up — classic contention/throttling signature) before any governor or process
+list was even inspected. Any future drift investigation should run this check first: if
+instruction counts match, the code is innocent and the search moves to the environment.
+
+**Rule going forward:** `scripts/measure_baseline.sh` now captures governor, load average,
+processes above 1% CPU, THP, `perf_event_paranoid`, kernel version, compiler version, build
+flags, and core frequency alongside every `perf stat` run. A result without that block attached
+is not a result — it can't be told apart from noise, including by whoever measured it.
+
+---
+
 ## A fabricated headroom number, sitting next to the real one that contradicted it
 
 **When:** Gate 3 report, matrix_good period-headroom summary, 2026-08-18.
