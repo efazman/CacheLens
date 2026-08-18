@@ -5,7 +5,9 @@
  * jumps to a different cache line.  This is the classic cache-thrashing
  * pattern.  Compare with matrix_good.cpp (i-k-j order).
  *
- * Build: g++ -O2 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_bad matrix_bad.cpp
+ * Build: g++ -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_bad matrix_bad.cpp
+ * (not -O2: GCC auto-vectorizes this loop at -O2 but not matrix_good's, an asymmetric
+ *  confound -- see results/phase1_matrix.txt §3)
  */
 
 #include <cstdlib>

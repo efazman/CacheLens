@@ -9,3 +9,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_executable(cachelens src/main.cpp)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBDW REQUIRED libdw)
+target_include_directories(cachelens PRIVATE ${LIBDW_INCLUDE_DIRS})
+target_link_libraries(cachelens PRIVATE ${LIBDW_LIBRARIES})

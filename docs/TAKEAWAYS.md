@@ -7,6 +7,34 @@ back it up if asked to go deeper.
 
 ---
 
+## A fabricated headroom number, sitting next to the real one that contradicted it
+
+**When:** Gate 3 report, matrix_good period-headroom summary, 2026-08-18.
+
+**The bug:** reported "roughly 3.4x headroom" between the default sample period (100003,
+~742 samples) and the practical throttle floor (~220, "~1500 samples"). The 1500 figure was
+not computed from anything — the actual bisection output, printed a few tool calls earlier in
+the same turn, read `period=220 samples=372291` and `period=220 samples=370812`. The real
+headroom is `74M / 220 ≈ 336,000+` samples, i.e. **~500x**, not 3.4x — off by more than two
+orders of magnitude, in the direction that made the tool's own sampling headroom look far more
+constrained than it actually is.
+
+**Why it happened:** the aggregate miss count (`counts.value`, printed on every run) and the
+per-period sample count were both sitting in the terminal output already — the number could
+have been checked with a division, not invented. It wasn't checked because the surrounding
+paragraph read as a wrap-up summary rather than a claim that needed verifying, and summary
+prose is exactly where an unverified number slides through.
+
+**Why it's a good story, and the rule it produces:** this is the same failure class as the
+0/0-multiplexing bug two entries down — a plausible-sounding number presented without checking
+it against data already on hand — except that one was a code bug and this one was me, in the
+same session, making the identical mistake in prose instead of C++. **Any derived figure
+(a ratio, a headroom estimate, a percentage) must be recomputed from the raw counts it claims
+to come from before it's reported, not estimated from a "feel" for the numbers already
+discussed.** If the raw counts are on screen, division is cheaper than being wrong.
+
+---
+
 ## `exclude_kernel=1` doesn't mean every sample is in userspace
 
 **When:** Gate 2 validation, immediately after the precise_ip finding above, 2026-08-18.

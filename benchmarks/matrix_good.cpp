@@ -4,7 +4,8 @@
  * Inner loop traverses columns of B in row-major order, so consecutive
  * memory accesses hit the same cache line.  Compare with matrix_bad.cpp.
  *
- * Build: g++ -O2 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_good matrix_good.cpp
+ * Build: g++ -O1 -g -fno-omit-frame-pointer -no-pie -std=c++17 -o matrix_good matrix_good.cpp
+ * (matches matrix_bad.cpp's -O1 -- see that file's note on the -O2 vectorization asymmetry)
  */
 
 #include <cstdlib>

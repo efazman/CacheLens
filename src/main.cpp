@@ -1,11 +1,14 @@
-// cachelens — increment 2: sampling mode + ring buffer drain.
+// cachelens — increment 4: DWARF attribution.
 //
 // Forks a child, stops it before exec, opens a sampling event (cache-misses,
 // fixed sample_period) attached to the child's pid with enable_on_exec=1,
-// resumes the child, drains the mmap ring buffer while it runs, and reports
-// the raw sampled instruction pointers.
+// resumes the child, drains the mmap ring buffer while it runs, classifies
+// every sample, and resolves target-executable samples to file:line via
+// libdw, offline against the target's own ELF (valid because -no-pie makes
+// link-time addresses equal runtime addresses — no live-process attach or
+// PERF_RECORD_MMAP2 needed).
 //
-// Deliberately NOT here yet: DWARF attribution, a second event, ranking.
+// Deliberately NOT here yet: a second event, concentration ranking.
 // precise_ip is pinned at 0 — Zen 4 has no PEBS-equivalent for this event
 // (precise_ip=2 and 1 both fail ENOENT; see docs/TAKEAWAYS.md). Samples are
 // therefore skidded by an unknown amount; that is a known, accepted limit
@@ -20,9 +23,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 #include <vector>
 
 #include <elf.h>
+#include <elfutils/libdwfl.h>
 #include <fcntl.h>
 #include <linux/perf_event.h>
 #include <poll.h>
@@ -136,6 +142,58 @@ Bucket classify(uint64_t ip, const TextRange& target) {
     if (ip >= target.lo && ip < target.hi) return Bucket::kTarget;
     return Bucket::kOtherUser;
 }
+
+// Resolves addresses to file:line entirely offline, against the target
+// binary on disk — no live-process attach, no PERF_RECORD_MMAP2. Valid
+// specifically because the target is -no-pie: link-time vaddr == runtime
+// address, the same fact that makes the static ELF text-range read above
+// correct. A PIE target would need mmap-bias tracking instead (deferred;
+// see Gate 4 notes).
+class DwarfResolver {
+public:
+    ~DwarfResolver() { if (dwfl_) dwfl_end(dwfl_); }
+
+    bool init(const char* path) {
+        callbacks_ = {};
+        callbacks_.find_elf = nullptr;
+        callbacks_.find_debuginfo = dwfl_standard_find_debuginfo;
+        callbacks_.section_address = dwfl_offline_section_address;
+        callbacks_.debuginfo_path = &debuginfo_path_;
+
+        dwfl_ = dwfl_begin(&callbacks_);
+        if (!dwfl_) return false;
+        mod_ = dwfl_report_offline(dwfl_, "target", path, -1);
+        if (!mod_) return false;
+        dwfl_report_end(dwfl_, nullptr, nullptr);
+        return true;
+    }
+
+    // Returns true and fills file/line on success. Returns false (and does
+    // not touch file/line) if the address has no line-table entry — e.g. it
+    // falls in the PLT, in padding between functions, or in code compiled
+    // without debug info. Never guesses.
+    bool resolve(uint64_t ip, std::string& file, int& line) const {
+        Dwfl_Line* dline = dwfl_module_getsrc(mod_, ip);
+        if (!dline) return false;
+        int line_no = 0;
+        const char* src = dwfl_lineinfo(dline, nullptr, &line_no, nullptr, nullptr, nullptr);
+        if (!src) return false;
+        file = src;
+        line = line_no;
+        return true;
+    }
+
+    // Best-effort symbol name for an address with no line-table entry —
+    // gives a reason ("memset@plt", say) instead of a bare "unattributed".
+    // Null is a legitimate answer (e.g. padding between functions).
+    const char* symbol_name(uint64_t ip) const { return dwfl_module_addrname(mod_, ip); }
+
+private:
+    Dwfl* dwfl_ = nullptr;
+    Dwfl_Module* mod_ = nullptr;
+    Dwfl_Callbacks callbacks_{};
+    char* debuginfo_path_ = nullptr;
+};
 
 // Copies `len` bytes starting at circular offset `off` (already < data_size)
 // out of the ring's data area, splitting the copy in two if it crosses the
@@ -277,6 +335,11 @@ int main(int argc, char** argv) {
             "PATH resolution this tool does not do) — sample classification depends on it");
     }
 
+    DwarfResolver dwarf;
+    if (!dwarf.init(target_argv[0])) {
+        die("libdw could not load DWARF info from the target — was it built with -g?");
+    }
+
     pid_t child = fork();
     if (child < 0) die_errno("fork");
 
@@ -415,10 +478,21 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(target_range.hi));
 
     // Every sample lands in exactly one bucket; all four are always printed,
-    // never silently dropped, even when zero. Only kTarget feeds attribution
-    // and ranking in later increments.
+    // never silently dropped, even when zero. Only kTarget feeds attribution.
     uint64_t bucket_count[4] = {0, 0, 0, 0};
     std::vector<uint64_t> kernel_ips;
+
+    // DWARF attribution, kTarget samples only. Resolution is cached per-ip:
+    // the same handful of addresses (the hot loop is a few instructions)
+    // account for the overwhelming majority of samples, so resolving each
+    // distinct address once is both cheaper and simpler than resolving
+    // every sample independently.
+    struct SourceLoc { std::string file; int line; };
+    std::map<uint64_t, bool> resolve_ok;
+    std::map<uint64_t, SourceLoc> resolve_loc;
+    std::map<std::pair<std::string, int>, uint64_t> line_counts;
+    uint64_t attributed = 0, unattributed = 0;
+
     if (!samples.empty()) {
         uint64_t lo = samples.front().ip, hi = samples.front().ip;
         for (const auto& s : samples) {
@@ -427,6 +501,25 @@ int main(int argc, char** argv) {
             Bucket b = classify(s.ip, target_range);
             ++bucket_count[static_cast<int>(b)];
             if (b == Bucket::kKernel) kernel_ips.push_back(s.ip);
+
+            if (b == Bucket::kTarget) {
+                auto cached = resolve_ok.find(s.ip);
+                bool ok;
+                if (cached == resolve_ok.end()) {
+                    SourceLoc loc;
+                    ok = dwarf.resolve(s.ip, loc.file, loc.line);
+                    resolve_ok[s.ip] = ok;
+                    if (ok) resolve_loc[s.ip] = loc;
+                } else {
+                    ok = cached->second;
+                }
+                if (ok) {
+                    ++attributed;
+                    ++line_counts[{resolve_loc[s.ip].file, resolve_loc[s.ip].line}];
+                } else {
+                    ++unattributed;
+                }
+            }
         }
         std::printf("IP range: [0x%llx, 0x%llx]\n", static_cast<unsigned long long>(lo),
                     static_cast<unsigned long long>(hi));
@@ -447,6 +540,47 @@ int main(int argc, char** argv) {
         std::printf("distinct kernel-space IPs (%zu):", kernel_ips.size());
         for (uint64_t ip : kernel_ips) std::printf(" 0x%llx", static_cast<unsigned long long>(ip));
         std::printf("\n");
+    }
+
+    // DWARF attribution report. attributed+unattributed == bucket[target
+    // executable]; every kTarget sample is accounted for in exactly one of
+    // the two, never dropped.
+    uint64_t target_total = bucket_count[static_cast<int>(Bucket::kTarget)];
+    double unattributed_pct =
+        target_total > 0 ? 100.0 * static_cast<double>(unattributed) / static_cast<double>(target_total) : 0.0;
+    std::printf("attributed: %llu, unattributed: %llu (%.4f%% of target-executable samples)\n",
+                static_cast<unsigned long long>(attributed),
+                static_cast<unsigned long long>(unattributed), unattributed_pct);
+
+    if (unattributed > 0) {
+        std::map<uint64_t, bool> printed;
+        std::printf("unattributed addresses and their nearest symbol (reason):\n");
+        for (const auto& [ip, ok] : resolve_ok) {
+            if (ok || printed[ip]) continue;
+            printed[ip] = true;
+            const char* sym = dwarf.symbol_name(ip);
+            std::printf("  0x%llx: %s\n", static_cast<unsigned long long>(ip),
+                        sym ? sym : "(no symbol either -- padding or stripped region)");
+        }
+    }
+
+    std::vector<std::pair<std::pair<std::string, int>, uint64_t>> ranked(line_counts.begin(),
+                                                                           line_counts.end());
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::printf("top %d attributed lines:\n", std::min<int>(10, static_cast<int>(ranked.size())));
+    for (size_t i = 0; i < ranked.size() && i < 10; ++i) {
+        std::printf("  #%zu  %s:%d  %llu samples\n", i + 1, ranked[i].first.first.c_str(),
+                    ranked[i].first.second, static_cast<unsigned long long>(ranked[i].second));
+    }
+
+    // Full distinct resolved-address list: diagnostic transparency (same
+    // pattern as the kernel-IP list above) and the data set the addr2line
+    // cross-validation is run against externally.
+    std::printf("distinct resolved target addresses (%zu):\n", resolve_loc.size());
+    for (const auto& [ip, loc] : resolve_loc) {
+        std::printf("  0x%llx -> %s:%d\n", static_cast<unsigned long long>(ip), loc.file.c_str(),
+                    loc.line);
     }
 
     uint64_t out_of_target = bucket_count[static_cast<int>(Bucket::kKernel)] +
