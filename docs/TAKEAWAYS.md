@@ -7,6 +7,61 @@ back it up if asked to go deeper.
 
 ---
 
+## `exclude_kernel=1` doesn't mean every sample is in userspace
+
+**When:** Gate 2 validation, immediately after the precise_ip finding above, 2026-08-18.
+
+**The finding:** with `exclude_kernel=1` set, a small fraction of samples (0.01%–0.13% across
+ten n=5 runs of both benchmarks) still carry a canonical kernel-space IP
+(`>=0xffff800000000000`). This is a *second, distinct* consequence of `precise_ip=0` — not
+the same thing as the source-line skid recorded above. `exclude_kernel` controls which
+*events increment the counter* (only user-mode cache misses count). It does not constrain
+*where the PMI captures the PC* when the counter overflows. With no PEBS-equivalent, interrupt
+delivery has latency, and that latency can carry the sample past a user→kernel privilege
+transition (a syscall entry path, most likely) before the RIP gets recorded — so a correctly
+user-mode-attributed *event* can still be captured at a kernel-mode *address*.
+
+**Why it's not alarming, and why it's still worth recording:** the two kernel addresses
+observed (`0xffffffffa5e00ef0`, `0xffffffffa751ba28`) are the *only* two seen across all ten
+runs of both benchmarks — not a scatter of random addresses, a tight cluster of exactly two,
+consistent with a specific, repeatable kernel entry path rather than noise. And the rate stays
+three orders of magnitude under the 1% halt threshold in every run. But it's a clean
+illustration that skid isn't just "the wrong source line" — at the boundary, it can be "the
+wrong privilege level entirely," which is why sample classification (target / other-user /
+kernel / unclassifiable, every sample counted, none dropped) is now a permanent part of the
+report rather than something bolted on only when it looks like a problem.
+
+---
+
+## Zen 4 has no PEBS-equivalent for `cache-misses`: `precise_ip` stuck at 0
+
+**When:** Gate 2, precise_ip negotiation, before any ring-buffer code was written, 2026-08-18.
+
+**The finding:** requesting `precise_ip=2` or `precise_ip=1` on `PERF_TYPE_HARDWARE` /
+`PERF_COUNT_HW_CACHE_MISSES` in sampling mode both fail with `ENOENT` — not `EACCES`/`EPERM`
+(which would mean a permissions problem) and not `EINVAL` (a malformed request). `ENOENT`
+specifically means the running PMU has no precise-sampling implementation of this event at
+all. Only `precise_ip=0` is accepted. This is expected, not a bug: AMD Zen 4 has no
+PEBS-equivalent facility for this event, so there is nothing for the kernel to offer above
+skid level 0 — the sampled IP is wherever the PMI landed after counter overflow, with
+unbounded skid, not the instruction that caused the miss.
+
+**Consequence:** every IP this sampler records from here on is skidded by an unknown,
+unbounded amount. Downstream attribution (Gate 4 onward) has to be validated *for skid
+specifically* — agreement with `addr2line` on a sampled address only proves the DWARF lookup
+is correct for whatever address was recorded, it says nothing about whether that address is
+the right one. Gate 4 adds a separate skid-characterization step (source-line distribution
+within the hot function, not just top-line agreement) precisely because of this gap.
+
+**Deferred, deliberately:** AMD IBS (Instruction-Based Sampling, `ibs_op`/`ibs_fetch`) is the
+AMD-side path to instruction-level precision — the rough equivalent of what PEBS gives on
+Intel. It requires a different `perf_event_open` configuration entirely (a dynamic PMU type
+discovered via `/sys/bus/event_source/devices/ibs_op`, not `PERF_TYPE_HARDWARE`) and is out
+of scope for this pass. Proceeding with `precise_ip=0` and documenting the skid was a decision
+made explicitly, not a default reached by not checking.
+
+---
+
 ## The 0/0 read as "multiplexing 0.0", and a silent exit 0
 
 **When:** increment 1 (counting-mode `perf_event_open` harness), 2026-08-16.
