@@ -149,16 +149,38 @@ void copy_wrapped(const uint8_t* data, size_t data_size, size_t off, void* dst, 
     if (first < len) std::memcpy(static_cast<uint8_t*>(dst) + first, data, len - first);
 }
 
+// Per-record-type counts for the Gate 3 report. lost_records is how many
+// PERF_RECORD_LOST records arrived; lost_events is the sum of their `lost`
+// field (the actual number of samples the kernel dropped) — two different
+// numbers worth keeping apart. `other` covers record types this build does
+// not specifically handle (MMAP, COMM, FORK, ...): skipped by header.size,
+// counted, never silently absorbed.
+struct RecordHistogram {
+    uint64_t sample = 0;
+    uint64_t lost_records = 0;
+    uint64_t lost_events = 0;
+    uint64_t exit_records = 0;
+    uint64_t other = 0;
+};
+
 // Drains whatever the kernel has published since the last call. `tail` is
-// owned entirely by this (single-threaded) consumer; `data_head` is owned by
-// the kernel producer, which is why it alone needs the acquire load — it
-// pairs with the kernel's release store after writing a record, and without
-// it we could read a record the kernel hasn't finished writing yet. The
-// release store on data_tail pairs with the kernel's own acquire load of it
-// before deciding whether writing further would overwrite unread data.
+// owned entirely by this (single-threaded) consumer and is plain local
+// state — nothing else ever writes it, so no atomic is needed to *read* it
+// here, only to *publish* it below. `data_head` is owned by the kernel
+// producer: the kernel does a release-store of data_head after it finishes
+// writing a record's bytes, so our load of data_head must be an acquire —
+// weaker than that (or a plain load) would let the compiler or CPU hoist
+// the record-body reads below above the head check, risking a read of a
+// record the kernel hasn't finished writing yet. Symmetrically, once we've
+// consumed up to `tail`, the release-store here pairs with the kernel's own
+// acquire-load of data_tail before it decides whether advancing data_head
+// further would overwrite data we haven't read — a plain store could let
+// the kernel observe a stale, too-low tail (visible reordering) and
+// conclude we're further behind than we are, which is safe-but-wrong for
+// throughput but the reverse ordering (a too-high tail visible early) is
+// not safe, so this has to be the strong side.
 void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_size,
-           uint64_t& tail, std::vector<Sample>& samples, uint64_t& lost_count,
-           uint64_t& unknown_count) {
+           uint64_t& tail, std::vector<Sample>& samples, RecordHistogram& hist) {
     uint64_t head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
 
     if (head - tail > data_size) {
@@ -172,6 +194,12 @@ void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_s
         struct perf_event_header hdr;
         copy_wrapped(data, data_size, off, &hdr, sizeof(hdr));
 
+        // header.size must be validated before it's trusted for anything
+        // below: too small means it can't even hold the header we just
+        // read (impossible for a well-formed record), and a size that
+        // would run past data_head would mean advancing `tail` into bytes
+        // the kernel hasn't published yet on the next iteration. Both are
+        // treated as corruption, not something to clamp or guess past.
         if (hdr.size < sizeof(hdr)) {
             die("malformed ring buffer record: header.size smaller than the header itself");
         }
@@ -179,18 +207,39 @@ void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_s
             die("malformed ring buffer record: header.size runs past data_head");
         }
 
-        if (hdr.type == PERF_RECORD_SAMPLE) {
-            struct { uint64_t ip; uint32_t pid; uint32_t tid; } body;
-            copy_wrapped(data, data_size, (off + sizeof(hdr)) % data_size, &body, sizeof(body));
-            samples.push_back({body.ip, body.pid, body.tid});
-        } else if (hdr.type == PERF_RECORD_LOST) {
-            struct { uint64_t id; uint64_t lost; } body;
-            copy_wrapped(data, data_size, (off + sizeof(hdr)) % data_size, &body, sizeof(body));
-            lost_count += body.lost;
-        } else {
-            // Anything else (MMAP, COMM, THROTTLE, ...) is out of scope for
-            // this increment; counted, not decoded, not silently dropped.
-            ++unknown_count;
+        switch (hdr.type) {
+            case PERF_RECORD_SAMPLE: {
+                struct { uint64_t ip; uint32_t pid; uint32_t tid; } body;
+                copy_wrapped(data, data_size, (off + sizeof(hdr)) % data_size, &body,
+                             sizeof(body));
+                samples.push_back({body.ip, body.pid, body.tid});
+                ++hist.sample;
+                break;
+            }
+            case PERF_RECORD_LOST: {
+                struct { uint64_t id; uint64_t lost; } body;
+                copy_wrapped(data, data_size, (off + sizeof(hdr)) % data_size, &body,
+                             sizeof(body));
+                hist.lost_events += body.lost;
+                ++hist.lost_records;
+                break;
+            }
+            case PERF_RECORD_EXIT:
+                ++hist.exit_records;
+                break;
+            case PERF_RECORD_THROTTLE:
+            case PERF_RECORD_UNTHROTTLE:
+                // Per explicit instruction: a throttle event means the
+                // kernel reduced the effective sampling rate mid-run,
+                // which silently invalidates the sample-count-to-aggregate
+                // relationship Gate 2 validated. Halt, do not log and
+                // continue — there is no "recover from this" path here.
+                die("PERF_RECORD_THROTTLE/UNTHROTTLE observed: the kernel changed the "
+                    "effective sampling rate mid-run. The sample-count-to-aggregate "
+                    "relationship validated in Gate 2 no longer holds for this run.");
+            default:
+                ++hist.other;
+                break;
         }
 
         tail += hdr.size;
@@ -299,20 +348,21 @@ int main(int argc, char** argv) {
     if (kill(child, SIGCONT) != 0) die_errno("kill(SIGCONT)");
 
     std::vector<Sample> samples;
-    uint64_t tail = 0, lost_count = 0, unknown_count = 0;
+    RecordHistogram hist;
+    uint64_t tail = 0;
     struct pollfd pfd { static_cast<int>(fd), POLLIN, 0 };
     bool child_exited = false;
     while (!child_exited) {
         int pret = poll(&pfd, 1, 100 /* ms: also re-checks waitpid on timeout */);
         if (pret < 0 && errno != EINTR) die_errno("poll(perf fd)");
         if (pret > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
-            drain(meta, data, data_size, tail, samples, lost_count, unknown_count);
+            drain(meta, data, data_size, tail, samples, hist);
         }
         pid_t w = waitpid(child, &status, WNOHANG);
         if (w < 0) die_errno("waitpid (drain loop)");
         if (w == child) child_exited = true;
     }
-    drain(meta, data, data_size, tail, samples, lost_count, unknown_count);  // final catch-up
+    drain(meta, data, data_size, tail, samples, hist);  // final catch-up
 
     struct read_format {
         uint64_t value;
@@ -353,8 +403,13 @@ int main(int argc, char** argv) {
 
     std::printf("sample_period: %llu\n", static_cast<unsigned long long>(sample_period));
     std::printf("samples captured: %zu\n", samples.size());
-    std::printf("records lost: %llu\n", static_cast<unsigned long long>(lost_count));
-    std::printf("unknown records skipped: %llu\n", static_cast<unsigned long long>(unknown_count));
+    std::printf("record histogram: sample=%llu lost_records=%llu lost_events=%llu "
+                "exit=%llu other=%llu\n",
+                static_cast<unsigned long long>(hist.sample),
+                static_cast<unsigned long long>(hist.lost_records),
+                static_cast<unsigned long long>(hist.lost_events),
+                static_cast<unsigned long long>(hist.exit_records),
+                static_cast<unsigned long long>(hist.other));
     std::printf("target text range: [0x%llx, 0x%llx)\n",
                 static_cast<unsigned long long>(target_range.lo),
                 static_cast<unsigned long long>(target_range.hi));
