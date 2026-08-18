@@ -100,7 +100,14 @@ granted.
 
 - Linux, x86-64, with a **hardware PMU exposed to userspace**
 - `elfutils` development headers (`libdw`, `libelf`)
-- Target binaries built with `-O2 -g -fno-omit-frame-pointer -no-pie -std=c++17`
+- Target binaries built with `-O1 -g -fno-omit-frame-pointer -no-pie -std=c++17` — not `-O2`:
+  at `-O2`, GCC auto-vectorizes `matrix_bad`'s inner loop, which changes the access pattern the
+  source implies (see `results/phase1_matrix.txt` §3). `-O1` was verified scalar for both
+  benchmarks via `objdump` before any measurement was trusted.
+- Transparent Huge Pages set to `madvise` (`cat /sys/kernel/mm/transparent_hugepage/enabled`),
+  i.e. off for anonymous mappings unless a caller explicitly requests them — none of the
+  benchmarks do, so THP is not a confound in the locality measurements above. Worth re-checking
+  on a different host: `always` would silently change the cache-line/TLB behavior being measured.
 
 Most cloud VMs do not expose a virtual PMU. On such a host every hardware event reads
 `<not supported>` and no profiler can produce data. Verify before anything else:
