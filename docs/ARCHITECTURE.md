@@ -4,6 +4,12 @@
 **Supersedes:** `DESIGN.md` and `OVERVIEW.md` (both predate the scope cut; see §8)
 **Governing document:** the Scope Handoff. Where this doc and the handoff disagree, the handoff wins.
 
+**Cleanup note (2026-08-19):** §7's deletions are now done — the Python prototype
+(`src/cacheprof/`, `tests/`, `pyproject.toml`, `requirements.txt`, `scripts/demo.sh`) is gone
+from the tree (git history still has it). `DESIGN.md` and `OVERVIEW.md` moved to `docs/archive/`
+per §8 rather than being deleted. §7's other line items (Mach-O binaries, `.DS_Store`, the `{src/`
+residue, the LLM layer) were already gone before this pass.
+
 ---
 
 ## 0. What changed and why this document exists

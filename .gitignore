@@ -1,12 +1,5 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
+# CMake build directory
 build/
-.venv/
-venv/
-.env
 
 # Profiling artifacts
 outputs/run_*/

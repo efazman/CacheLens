@@ -205,8 +205,6 @@ public:
         return true;
     }
 
-    const char* symbol_name(uint64_t ip) const { return dwfl_module_addrname(mod_, ip); }
-
 private:
     Dwfl* dwfl_ = nullptr;
     Dwfl_Module* mod_ = nullptr;
