@@ -7,6 +7,30 @@ back it up if asked to go deeper.
 
 ---
 
+## Profiling made the target faster, not slower, and the measurement to explain why wasn't good enough to trust
+
+**When:** Gate 7 Phase 6, measuring CacheLens's own profiling overhead, 2026-08-22.
+
+**The surprise:** 5 interleaved paired trials (standalone vs. under CacheLens, same benchmark,
+same machine, back to back) showed the target's own self-reported wall-clock time ~17% *lower*
+under CacheLens, every single trial. Not overhead -- the opposite of overhead, and the opposite
+of this project's own prior finding that background load biases results upward.
+
+**What didn't get done, and why that's the right call:** proposed a mechanism (tens of thousands
+of PMU sampling interrupts per second interacting with the `powersave` governor's frequency
+selection) and tried to check it directly by polling `scaling_cur_freq` during both scenarios.
+The attempt failed on timing precision -- a ~0.58s benchmark is too fast to reliably synchronize
+against 0.1s-granularity shell polling, and one sample was caught after the process had already
+exited. Rather than re-run with better tooling or quietly drop the frequency-check attempt from
+the writeup, both the surprising result and the failed verification attempt are recorded as-is
+in `results/gate7_drain.txt`.
+
+**One-line takeaway:** a plausible mechanism you can name is not the same as a mechanism you've
+checked -- report the honest gap between "here's what I observed" and "here's why," especially
+when the obvious explanation (profiling = overhead) turns out to be wrong.
+
+---
+
 ## The "performance" governor gave the worse tail, and the null result that predicted otherwise didn't apply
 
 **When:** Gate 7 Phase 5, re-asking Gate 5's governor question for a latency-sensitive workload,

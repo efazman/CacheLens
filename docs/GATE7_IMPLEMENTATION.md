@@ -482,12 +482,16 @@ results/gate7_latency.txt      NEW
 
 ### Exit criteria
 
-- [ ] A stated answer to "does the drain keep up, and what does profiling cost the target,"
-      with numbers.
-- [ ] If the answer is "comfortably, and little": **Phase 7 does not happen**, and that null
-      result is written into the README and `TAKEAWAYS.md` on the same footing as the governor
-      null result. This is the expected outcome under U6's aggregate-rate configuration
-      (~8.3 s of headroom) and it is not a failure.
+- [x] A stated answer to "does the drain keep up, and what does profiling cost the target," with
+      numbers — `results/gate7_drain.txt`. Drain: comfortably (max observed iteration 495us
+      against a ~3.28s headroom, 3+ orders of magnitude of margin). Loss: zero on the
+      representative workload. Cost: **no measurable slowdown — the target consistently ran
+      ~17% faster under CacheLens in 5/5 paired trials**, the opposite of the naive
+      expectation, with a plausible-but-unconfirmed mechanism (PMU interrupts interacting with
+      the powersave governor's frequency selection) explicitly not verified in this pass.
+- [x] "Comfortably, and little" confirmed: **Phase 7 does not happen.** Null result written into
+      the README and `docs/TAKEAWAYS.md` on the same footing as the governor null result. This
+      is the expected outcome under U6's aggregate-rate configuration and it is not a failure.
 
 ---
 

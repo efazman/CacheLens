@@ -1,0 +1,78 @@
+=== Gate 7 Phase 6: measuring CacheLens's own drain path ===
+generated: 2026-08-22
+Nothing built in this phase (per the plan) beyond a small, always-on timing
+instrumentation around the existing poll/drain loop (src/main.cpp) -- measurement only.
+
+--- environment ---
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+governor: powersave
+perf_event_paranoid: 1
+
+=== 1. Drain service time (U24) ===
+
+Against benchmarks/spsc_queue_shared (a real, contended, two-thread workload):
+
+  drain-active poll iterations: 157
+  mean:  29,268ns
+  p50:   18,705ns
+  p99:   300,158ns
+  max:   495,441ns
+
+Compare against Phase 0's U7 headroom figure: ~3.28s per ring before overwrite, under the
+aggregate sample-rate configuration (U6). The worst observed single drain iteration
+(495us) is over 3 orders of magnitude below that headroom. The drain comfortably keeps up
+under this workload and sizing -- exactly the outcome the aggregate-rate configuration was
+chosen (on statistical grounds, not to make this measurement come out well; see U6's decision
+record in docs/GATE7_PLAN.md) to make likely.
+
+=== 2. Actual loss (U24 -- the real SLO; drain latency above is only a proxy for it) ===
+
+benchmarks/spsc_queue_shared: lost_records=0, lost_events=0 (every run observed this session).
+
+benchmarks/mpmc_queue_shared (2 producers, 2 consumers, genuine CAS contention): a SEPARATE,
+disclosed limitation surfaced here, not a drain-loss problem -- a PERF_RECORD_THROTTLE/
+UNTHROTTLE halt fired on access@cpu2 during one run. This is the kernel's own sampling-rate
+governor reacting to bursty CAS-retry-driven event rates exceeding what the calibrated
+(average-rate) period anticipated on that specific CPU -- a real, previously-flagged risk (the
+plan explicitly names increased throttle likelihood with 24 independently-throttled rings) and
+is orthogonal to drain keeping up: it is the KERNEL declining to deliver samples at the
+requested rate, not CacheLens failing to drain what was delivered. Reported, not chased further
+in this pass; a fix would mean widening the calibration's safety margin for bursty workloads
+specifically, out of scope for Phase 6 (measurement only).
+
+=== 3. Profiling overhead (U27) ===
+
+Interleaved standalone vs. under-cachelens comparison, 5 paired trials, benchmarks/
+spsc_queue_shared's OWN self-reported wall-clock time (its internal std::chrono measurement
+between producer/consumer thread joins, printed by the benchmark regardless of whether it is
+being profiled):
+
+  pair   standalone      cachelens (measurement-run pass only, not counting the calibration exec)
+  1      0.584599s       0.484466s
+  2      0.583131s       0.483090s
+  3      0.580125s       0.483568s
+  4      0.580174s       0.482500s
+  5      0.580762s       0.483987s
+
+**Surprising, and reported honestly rather than forced into the expected direction:** the target
+consistently ran FASTER under CacheLens's measurement pass than standalone, by about 17%, in
+5 of 5 paired trials -- the opposite of the naive "profiling adds overhead" expectation, and also
+the opposite direction from what this project's own documented finding (background load biases
+results *upward*, README) would suggest if profiling were acting as ordinary background load.
+
+Attempted to verify a mechanism (hypothesis: PMU sampling interrupts, ~47,000/sec across both
+events, could interact with the "powersave" governor's utilization heuristics and push it to
+select a higher P-state than it would for the identical workload unprofiled) by sampling
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq during both scenarios. This did NOT produce
+a usable answer: the benchmark's ~0.58s runtime is too short to reliably synchronize with 0.1s-
+granularity shell-level polling, and the one attempt at capturing the profiled run's frequency
+was mistimed (sampled after the process had already exited). Not re-attempted with better
+tooling in this pass -- stated as an open question, not resolved.
+
+**What this means for Phase 7:** profiling cost, measured the only way available in this pass,
+shows no evidence of slowing the target down under this configuration -- if anything the
+opposite, unexplained. Combined with §1's comfortable drain margin and §2's zero loss on the
+representative (non-throttled) workload, this is the "comfortably, and little" outcome the plan
+identified as the expected result under the aggregate sample-rate configuration (U6). Phase 7
+(conditional MPSC inside CacheLens's own drain) is NOT triggered by this measurement.

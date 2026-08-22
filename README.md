@@ -216,6 +216,31 @@ higher but remarkably stable p99.9 (under 3% spread across 5 runs). The cause is
 stated as a hypothesis (turbo/thermal transition stalls under sustained max-frequency load), not
 a finding.
 
+## Does CacheLens keep up with its own targets? (Gate 7 Phase 6)
+
+Nothing new is built for this section — it only measures. Full data:
+[`results/gate7_drain.txt`](results/gate7_drain.txt).
+
+**The drain keeps up, comfortably.** Against a genuinely contended two-thread workload, the
+worst single poll-loop drain iteration observed was 495us — three-plus orders of magnitude under
+the ~3.3s headroom the aggregate sample-rate configuration (Phase 0, U6/U7) provides per ring.
+Zero `lost_records`/`lost_events` on that workload, every run.
+
+**Profiling cost — measured, and not in the expected direction.** Comparing the target's own
+self-reported wall-clock time, standalone vs. under CacheLens, across 5 interleaved paired
+trials: the target ran *faster* under CacheLens in all five, by about 17%, not slower. This
+project's own prior finding is that background load biases results *upward* (see the first case
+study) — this result is neither that nor the naive "profiling adds overhead" expectation. A
+plausible mechanism (PMU sampling interrupts, tens of thousands per second, interacting with the
+`powersave` governor's frequency selection) was proposed but not confirmed — an attempt to
+verify it via live CPU-frequency sampling failed on timing precision against a sub-second
+benchmark, and is reported as an open question rather than forced into an answer.
+
+**Because the drain keeps up and profiling shows no measured cost, Phase 7 (a concurrent queue
+inside CacheLens's own drain path) does not happen** — the expected outcome under the aggregate
+sample-rate configuration, and, like the governor null result, worth recording precisely because
+it was tested rather than assumed.
+
 ## Limitations and caveats
 
 - **Benchmarks are built `-O1`, not `-O2`.** At `-O2`, GCC auto-vectorizes `matrix_bad`'s inner

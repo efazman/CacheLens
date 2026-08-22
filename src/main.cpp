@@ -75,6 +75,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
@@ -768,11 +769,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Gate 7 Phase 6 (U24, U27): measurement only, nothing behavioral changes
+    // here. Records how long each poll-loop iteration actually spends
+    // draining ready rings, so "does the drain keep up" is a number
+    // instead of an assumption. Negligible overhead (one steady_clock call
+    // per iteration, not per sample) and does not affect what gets drained
+    // or when.
+    std::vector<double> drain_iter_ns;
     bool child_exited = false;
     int status = 0;
     while (!child_exited) {
         int pret = poll(pfd.data(), pfd.size(), 100);
         if (pret < 0 && errno != EINTR) die_errno("poll(perf fds)");
+        auto drain_t0 = std::chrono::steady_clock::now();
+        bool drained_any = false;
         for (int i = 0; i < 2; ++i) {
             for (int c = 0; c < nr_cpus; ++c) {
                 auto& p = pfd[static_cast<size_t>(i) * nr_cpus + c];
@@ -780,8 +790,13 @@ int main(int argc, char** argv) {
                     auto& e = ev[i][c];
                     drain(e.meta, e.data, e.data_size, e.tail, e.samples, e.hist,
                           ring_label(plans[i].label, c));
+                    drained_any = true;
                 }
             }
+        }
+        if (drained_any) {
+            auto drain_t1 = std::chrono::steady_clock::now();
+            drain_iter_ns.push_back(std::chrono::duration<double, std::nano>(drain_t1 - drain_t0).count());
         }
         pid_t w = waitpid(child, &status, WNOHANG);
         if (w < 0) die_errno("waitpid (drain loop)");
@@ -900,6 +915,28 @@ int main(int argc, char** argv) {
     AttributionResult attr[2];
     for (int i = 0; i < 2; ++i) attr[i] = classify_and_attribute(combined_samples[i], target_range, dwarf);
     for (int i = 0; i < 2; ++i) print_event_report(plans[i].label, ev[i], attr[i]);
+
+    // Gate 7 Phase 6 (U24): drain service time, measured not assumed.
+    if (!drain_iter_ns.empty()) {
+        std::vector<double> sorted_ns = drain_iter_ns;
+        std::sort(sorted_ns.begin(), sorted_ns.end());
+        auto at = [&](double q) { return sorted_ns[std::min(sorted_ns.size() - 1,
+                                       static_cast<size_t>(q * sorted_ns.size()))]; };
+        double sum = 0;
+        for (double v : sorted_ns) sum += v;
+        std::printf("\n=== drain path (Gate 7 Phase 6, U24) ===\n");
+        std::printf("drain-active poll iterations: %zu, mean=%.0fns p50=%.0fns p99=%.0fns max=%.0fns\n",
+                    sorted_ns.size(), sum / sorted_ns.size(), at(0.50), at(0.99), sorted_ns.back());
+    }
+    {
+        uint64_t total_lost_records = 0, total_lost_events = 0;
+        for (int i = 0; i < 2; ++i)
+            for (const auto& e : ev[i]) { total_lost_records += e.hist.lost_records; total_lost_events += e.hist.lost_events; }
+        std::printf("total lost_records=%llu, total lost_events=%llu (the real SLO; drain "
+                    "latency above is only a proxy for it)\n",
+                    static_cast<unsigned long long>(total_lost_records),
+                    static_cast<unsigned long long>(total_lost_events));
+    }
 
     // --- Concentration ranking (unchanged from the single-ring design —
     // it operates only on attr[].line_counts, a plain map, regardless of
