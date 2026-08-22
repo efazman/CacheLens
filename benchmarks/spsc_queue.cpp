@@ -124,6 +124,38 @@ void pin_to(int cpu) {
     }
 }
 
+// Gate 7 Phase 3 (U9/U10): dedicated noinline wrappers around the tail/head
+// stores, using __atomic_store_n (a compiler builtin) rather than
+// std::atomic::store(). Two attribution bugs found and fixed here, via
+// objdump -dlC, not assumed:
+//
+//   1. With plain noinline wrappers still calling q.tail.store()/
+//      q.head.store(), the *store instruction itself* still attributed to
+//      libstdc++'s atomic_base.h:477 -- std::atomic<uint64_t>::store() is
+//      a templated inline function with its own DWARF location, and
+//      wrapping the *call site* in noinline doesn't stop the library
+//      function it calls from carrying its own inline-subroutine debug
+//      info. This tool has no inline-frame expansion (documented
+//      limitation), so the sample resolves to the innermost frame: the
+//      header, not the caller.
+//   2. Worse: BOTH store_tail's and store_head's underlying calls resolved
+//      to the exact same header line (both instantiate the identical
+//      std::atomic<uint64_t>::store() template), so even a noinline
+//      wrapper alone could not distinguish "tail was written" from "head
+//      was written" by line number -- exactly the ambiguity the whole
+//      false-sharing prediction needs to avoid, since "the index-update
+//      line" has to mean a specific one of the two.
+//
+// __atomic_store_n is a compiler builtin, not a real function with its own
+// source location, so the emitted store instruction attributes directly
+// to the wrapper's own line -- verified via objdump before trusting it.
+__attribute__((noinline)) void store_tail(Queue& q, uint64_t v) {
+    __atomic_store_n(reinterpret_cast<uint64_t*>(&q.tail), v, __ATOMIC_RELAXED);
+}
+__attribute__((noinline)) void store_head(Queue& q, uint64_t v) {
+    __atomic_store_n(reinterpret_cast<uint64_t*>(&q.head), v, __ATOMIC_RELAXED);
+}
+
 // `tail` is this function's own private reservation counter -- no other
 // thread ever writes or reads it. Fullness is decided by the slot's own
 // sequence number, not by reading `head`.
@@ -137,7 +169,7 @@ __attribute__((noinline)) void push(Queue& q, uint64_t value) {
     }
     cell.data = value;
     cell.sequence.store(pos + 1, std::memory_order_release);
-    q.tail.store(pos + 1, std::memory_order_relaxed);
+    store_tail(q, pos + 1);
 }
 
 // `head` is this function's own private reservation counter -- no other
@@ -153,7 +185,7 @@ __attribute__((noinline)) uint64_t pop(Queue& q) {
     }
     uint64_t value = cell.data;
     cell.sequence.store(pos + kCapacity, std::memory_order_release);
-    q.head.store(pos + 1, std::memory_order_relaxed);
+    store_head(q, pos + 1);
     return value;
 }
 

@@ -348,9 +348,32 @@ that is the finding.
 
 ### Exit criteria
 
-- [ ] A skid number for the queue workload, published whether or not it is favourable.
-- [ ] U11 decided and either implemented or documented as declined.
-- [ ] Excluded-site count reported for the new workload.
+- [x] A skid number for the queue workload, published whether or not it is favourable — and it
+      is not entirely favourable: the two spin-wait check lines absorb ~73% of raw miss samples
+      combined (a call-frequency artifact), while the actual index-update lines
+      (`store_tail`/`store_head`, isolated below) get only 4.3% and 0.3%. See
+      `results/gate7_phase3_attribution.txt`.
+- [x] **A second, more serious attribution bug found and fixed along the way, before U9's
+      characterization could even be attempted honestly:** `objdump -dlC` showed the compiler
+      inlining `std::atomic<uint64_t>::store()` from *both* `q.tail.store()` and an unrelated
+      per-slot `cell.sequence.store()` onto the identical DWARF line-table entry
+      (`atomic_base.h:477`) — meaning the exact "index-update line" the whole Gate 7 prediction
+      is about was not separately attributable at all. Fixed with dedicated `noinline` wrapper
+      functions using `__atomic_store_n` (a compiler builtin, not a library template function,
+      so it carries no competing inline-subroutine debug info) — verified via `objdump` that
+      each wrapper's store now attributes to its own distinct source line before trusting it.
+      This is a DWARF/inlining attribution gap, not classic PMU skid; U9's "must be redone"
+      instruction undersold how different this workload's failure mode could be from Gate 4's.
+- [x] U11 decided: **declined for this specific queue design.** `push()`/`pop()` are separate
+      functions occupying separate source lines, so producer/consumer are already disambiguated
+      by `(file, line)` without needing `tid` — and after the fix above, `store_tail`/
+      `store_head` are each called by exactly one thread, so those lines are unambiguous too.
+      Flagged as a real limitation for Phase 5's MPMC benchmark instead, where `push()`/`pop()`
+      are each called by *multiple* producer/consumer threads and a per-TID breakdown could
+      reveal genuine per-thread imbalance within one shared line — not implemented here, since
+      Phase 5 hasn't run yet to show it's actually needed.
+- [x] Excluded-site count reported for the new workload — 2 sites below the 30-access-sample
+      gate on a typical run (small, mid-function control-flow addresses with too few hits).
 
 ---
 

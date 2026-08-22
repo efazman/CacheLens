@@ -7,6 +7,41 @@ back it up if asked to go deeper.
 
 ---
 
+## Two different atomic stores can share one line in the debug info — `noinline` on the caller doesn't fix it
+
+**When:** Gate 7 Phase 3, characterizing skid for the queue workload before running the
+false-sharing experiment, 2026-08-22.
+
+**The bug:** the pooled raw-miss-count distribution for `spsc_queue_padded` never showed source
+line 140 (`q.tail.store(...)`) or line 156 (`q.head.store(...)`) at all — the exact two lines the
+entire Gate 7 false-sharing prediction is about. `objdump -dlC` (source-annotated disassembly)
+showed why: GCC inlined `std::atomic<uint64_t>::store()` from *both* that store and an unrelated,
+nearby `cell.sequence.store()` call, and both inlined instances shared the identical DWARF
+line-table entry (`atomic_base.h:477`, the header's own line for the template body) — with no
+separate entry for either call site. `precise_ip=0`'s usual skid (the sampled IP landing a few
+instructions past the true one) was not the mechanism here at all; this was two semantically
+different operations resolving to the same reported location because they're the same template
+instantiation. Wrapping the call sites in dedicated `__attribute__((noinline))` functions did
+*not* fix it — noinline only stops a function from being inlined into *its callers*, it does
+nothing to stop that function from inlining what *it* calls, and `std::atomic::store()` is a
+tiny header-defined template GCC will inline into the wrapper regardless.
+
+**The fix:** replace `q.tail.store(v, order)` inside the wrapper with
+`__atomic_store_n(reinterpret_cast<uint64_t*>(&q.tail), v, __ATOMIC_RELAXED)` — a compiler
+builtin, not a real function with its own source location, so it carries no inline-subroutine
+debug info to compete with the wrapper's own line. Verified via `objdump` before trusting it:
+the store instruction now resolves to the wrapper's own line, and `store_tail`'s and
+`store_head`'s lines are now distinct from each other and from the unrelated per-slot store.
+
+**One-line takeaway:** "no inline-frame expansion" (already a documented limitation) isn't only
+a call-site-vs-callee ambiguity — two *different* call sites into the *same* tiny inlined
+library function can collapse onto one shared debug-info location, silently merging two
+operations a profiler's whole point is to tell apart. `noinline` on your own code doesn't reach
+into what a library header inlines into you; check with `objdump -dlC`, don't assume from the
+source that a `noinline` boundary is where DWARF attribution actually stops.
+
+---
+
 ## A per-CPU counter's own multiplexing ratio looks exactly like contention when a thread just migrates
 
 **When:** Gate 7 Phase 2, first run of the rewritten per-CPU sampler against `matrix_bad` (a
