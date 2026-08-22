@@ -7,6 +7,32 @@ back it up if asked to go deeper.
 
 ---
 
+## The "performance" governor gave the worse tail, and the null result that predicted otherwise didn't apply
+
+**When:** Gate 7 Phase 5, re-asking Gate 5's governor question for a latency-sensitive workload,
+2026-08-22.
+
+**The surprise:** Gate 5 found governor (`performance` vs `powersave`) doesn't matter for a
+memory-stalled matrix workload — a real null result, confirmed via IPC. Phase 5's plan explicitly
+flagged that this should be re-tested, not inherited, for a latency harness. It was right to
+insist: p50/p99 stayed governor-insensitive (matching Gate 5's direction), but the *tail*
+diverged sharply, and in the opposite direction intuition suggests a governor named "performance"
+should give. `performance` produced a *lower* typical p99.9 but wildly inconsistent run-to-run
+behavior, including a 1.85ms outlier (~25,000x the median) in one of five runs. `powersave` gave
+a *higher* but strikingly consistent p99.9 — under 3% spread across five separate runs.
+
+**Not fully explained, and not pretended to be.** A plausible mechanism (sustained max-frequency
+operation increasing exposure to turbo/thermal transition stalls, which `powersave`'s more
+conservative operating point avoids) is recorded as a hypothesis in `results/gate7_latency.txt`,
+explicitly not verified against thermal telemetry in this pass.
+
+**One-line takeaway:** a null result from one workload class (compute/memory-bound throughput)
+is not evidence for the same null on a different class (tail latency) — the plan's own
+instruction to re-ask rather than inherit is what surfaced a real, counter-intuitive effect that
+assuming the prior result would have hidden entirely.
+
+---
+
 ## A failed pre-registered prediction, and the one-instruction skid that explains it
 
 **When:** Gate 7 Phase 4, adjudicating the false-sharing prediction against the SPSC queue,

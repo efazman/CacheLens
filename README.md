@@ -193,6 +193,29 @@ padding-sensitive effect, and that concentration and raw count see it differentl
 failed prediction reported with the data that explains why is worth more than a success that
 wasn't checked this closely.
 
+## Tail latency, and a governor result that does *not* transfer
+
+[`results/gate7_latency.txt`](results/gate7_latency.txt): an open-loop, rate-controlled harness
+(500,000 ops/sec, well below the queue's unsaturated capacity) measuring padded-vs-shared queue
+latency, and separately, CPU governor sensitivity — re-asked rather than assumed, because Gate
+5's governor null result was measured on a memory-stalled workload and a latency-sensitive one
+is a different question.
+
+**The false-sharing penalty shows up in typical latency, not in the tail, at this load level.**
+p50 and p99 are consistently 10-20% higher on the shared build, every run (n=5 each); p99.9 and
+above overlap completely between builds — at a rate this far from saturation, tail latency is
+dominated by ordinary OS scheduling noise, which is larger than the cache-line-placement effect
+and swamps it.
+
+**The governor result does not transfer, confirming it shouldn't have been assumed to.** Typical
+latency (p50/p99) is governor-insensitive, matching Gate 5's direction. The tail is not:
+`performance` gives a lower typical p99.9 but wildly inconsistent run-to-run behavior and
+occasional extreme outliers (up to 1.85ms — a ~25,000x multiple of p50, visible only because the
+open-loop design doesn't hide stalls the way a closed-loop harness would); `powersave` gives a
+higher but remarkably stable p99.9 (under 3% spread across 5 runs). The cause is not confirmed —
+stated as a hypothesis (turbo/thermal transition stalls under sustained max-frequency load), not
+a finding.
+
 ## Limitations and caveats
 
 - **Benchmarks are built `-O1`, not `-O2`.** At `-O2`, GCC auto-vectorizes `matrix_bad`'s inner

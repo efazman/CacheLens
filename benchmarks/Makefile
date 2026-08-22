@@ -59,5 +59,15 @@ mpmc_queue_shared_O2: mpmc_queue.cpp
 mpmc_queue_padded_O2: mpmc_queue.cpp
 	$(CXX) $(QUEUE_LAT_FLAGS) -DCACHELENS_PAD_INDICES=1 -o $@ $<
 
+queue_latency_padded: queue_latency.cpp
+	$(CXX) $(QUEUE_LAT_FLAGS) -DCACHELENS_PAD_INDICES=1 -o $@ $<
+
+queue_latency_shared: queue_latency.cpp
+	$(CXX) $(QUEUE_LAT_FLAGS) -DCACHELENS_PAD_INDICES=0 -o $@ $<
+
+LATENCY_TARGETS := queue_latency_padded queue_latency_shared
+
+latency: $(LATENCY_TARGETS)
+
 clean:
-	rm -f $(TARGETS) $(QUEUE_TARGETS)
+	rm -f $(TARGETS) $(QUEUE_TARGETS) $(LATENCY_TARGETS)

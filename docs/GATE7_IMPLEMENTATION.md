@@ -444,11 +444,23 @@ results/gate7_latency.txt      NEW
 
 ### Exit criteria
 
-- [ ] p99 and p99.9 for padded and unpadded, with run-to-run variance.
-- [ ] Timer-overhead figure stated alongside.
-- [ ] Coordinated-omission handling described explicitly in the results file.
-- [ ] Governor sensitivity re-measured for this workload.
-- [ ] **Kept in its own table.** Never merged with concentration numbers — same discipline the
+- [x] p99 and p99.9 for padded and unpadded, with run-to-run variance — n=5 each, governor=
+      powersave. p50/p99 show a consistent, every-run difference (shared ~20%/~10-15% higher);
+      p99.9 and above overlap between builds, no signal at this open-loop, unsaturated rate.
+- [x] Timer-overhead figure stated alongside — 15-19ns, 20-26% of measured p50, stated as a large
+      fraction rather than hidden.
+- [x] Coordinated-omission handling described explicitly in the results file — the payload is
+      the producer's *intended* send timestamp on a fixed, non-slipping schedule; demonstrated by
+      the performance-governor run's 1.85ms max outlier, which a closed-loop harness would never
+      have surfaced.
+- [x] Governor sensitivity re-measured for this workload — **real, unlike Gate 5's null result.**
+      p50/p99 are governor-insensitive (matches Gate 5's direction), but the tail diverges
+      sharply: "performance" gives a lower typical p99.9 with wild run-to-run variance and
+      occasional extreme outliers (up to 1.85ms); "powersave" gives a higher but remarkably
+      stable p99.9 (<3% spread across 5 runs). Root cause not confirmed (hypothesized: turbo/
+      thermal transition stalls under sustained max-frequency operation) — stated as a
+      hypothesis, not a finding.
+- [x] **Kept in its own table.** Never merged with concentration numbers — same discipline the
       README applies to the `perf stat` baseline versus CacheLens's own aggregate.
 
 ---
