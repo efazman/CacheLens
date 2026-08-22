@@ -167,11 +167,14 @@ U10 inlining mitigation: __attribute__((noinline)) | implement inline-frame expa
 
 ### Exit criteria
 
-- [ ] `results/gate7_probes.txt` exists, with an environment block, answering U1–U4 with numbers.
-- [ ] The U3 arithmetic prediction is confirmed or corrected in writing.
-- [ ] P4's outcome is classified into one of the three rows above, with the third excluded.
-- [ ] The decision record is filled in and committed **before** Phase 1 starts.
-- [ ] If P4 landed in row two, §0's prediction in `GATE7_PLAN.md` is rewritten and re-dated.
+- [x] `results/gate7_probes.txt` exists, with an environment block, answering U1–U4 with numbers.
+- [x] The U3 arithmetic prediction is confirmed or corrected in writing — corrected (real ceiling
+      is ~2x the naive formula's estimate; 512 KiB, not 1 MiB, is the ring size that fits).
+- [x] P4's outcome is classified into one of the three rows above, with the third excluded — row
+      one (large wall-clock **and** large `cache-misses` gap), `objdump` confirms the offsets.
+- [x] The decision record is filled in and committed **before** Phase 1 starts — see
+      `GATE7_PLAN.md`'s "Decisions (Phase 0)" section.
+- [x] P4 landed in row one, not row two — §0's prediction stands unmodified.
 
 ---
 
@@ -231,11 +234,18 @@ purposes never share a table.
 
 ### Exit criteria
 
-- [ ] A measured, environment-stamped wall-clock delta between padded and unpadded.
-- [ ] `objdump` and static-assert evidence that the delta has the cause claimed for it.
-- [ ] The `perf stat` event signature matches what Phase 0's P4 predicted for this shape.
-- [ ] If there is no wall-clock delta: **Phase 1 iterates.** There is no bug to find and nothing
-      downstream is worth building.
+- [x] A measured, environment-stamped wall-clock delta between padded and unpadded — SPSC: 3.75x
+      (-O1), 4.58x (-O2). MPMC (2P2C): 2.07x. `results/gate7_queue_baseline.txt`.
+- [x] `objdump` and static-assert evidence that the delta has the cause claimed for it — confirmed
+      tail/head offsets: 8 bytes apart (shared) vs. 64 bytes apart (padded).
+- [x] The `perf stat` event signature matches what Phase 0's P4 predicted for this shape — large
+      wall-clock gap with a large accompanying `cache-misses` gap (SPSC: 100M vs 31M, ~3.2x).
+- [x] There *was* no wall-clock delta, twice, before there was one — **Phase 1 iterated**, per
+      this exact exit criterion. Two design bugs found and fixed along the way (see
+      `docs/TAKEAWAYS.md`): `alignas(64)` doesn't reserve a field's full line, and naive
+      always-reload / locally-cached designs both let *true* sharing swamp the *false*-sharing
+      signal. The design that worked (Vyukov-style per-slot sequence numbers, degenerated to one
+      writer per index for SPSC) is documented in `benchmarks/spsc_queue.cpp`'s header.
 
 ---
 

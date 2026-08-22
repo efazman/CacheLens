@@ -7,6 +7,49 @@ back it up if asked to go deeper.
 
 ---
 
+## `alignas(64)` pads a field's start, not its extent — and a naive false-sharing benchmark can hide its own bug
+
+**When:** Gate 7 Phase 1, building the SPSC queue benchmark for the false-sharing case study,
+2026-08-22.
+
+**The bug (two, actually, stacked on top of each other):** first attempt at a "padded" queue
+struct used `alignas(64) std::atomic<uint64_t> head; alignas(64) std::atomic<uint64_t> tail;`
+followed by a `uint64_t buffer[capacity]` member. `alignas(64)` only forces that *field's own*
+start address to a 64-byte boundary — it does not reserve the rest of the line. Since `tail` is
+only 8 bytes, `buffer`'s first six `uint64_t` elements packed into the unused 56 bytes of
+`tail`'s own cache line, so the "padded" build was still false-sharing `tail` against
+`buffer[0..6]`, just as badly as the intentionally-unpadded build. Wall-clock A/B showed no
+delta — not because the effect wasn't there, but because the "control" arm hadn't actually
+controlled for the variable it claimed to.
+
+**The second bug, uncovered only after fixing the first:** even with `tail`/`head` correctly
+isolated (explicit trailing padding bytes added to consume the full 64 bytes), the padded and
+unpadded builds *still* measured within 2% of each other. Root cause was the benchmark's logic,
+not the struct layout: push()/pop() unconditionally reloaded both atomics on every call, which is
+heavy *true* sharing (a real, necessary cross-core read every single call, needed regardless of
+which cache line anything sits on) that swamps the marginal *false*-sharing cost of adjacency.
+Switching to the standard "cache the other side's last-observed index locally, refill only on a
+miss" optimization didn't fix it either — instrumented refill counts showed the consumer refilling
+on 75% of calls regardless of buffer capacity, because with producer and consumer doing
+near-identical per-item work, whichever side is even slightly faster exhausts its cached view on
+almost every call, which is a property of relative thread speed, not of struct layout.
+
+**The fix:** adopt the technique real lock-free queues (Vyukov's bounded MPMC design,
+`boost::lockfree::queue`) actually use for this reason: decide readiness/fullness from a
+per-slot sequence number stored *with the data*, never by reading the other thread's index
+directly. That makes `head` written and read only by the consumer, `tail` written and read only
+by the producer — structurally identical to two independent, never-cross-read counters — which is
+what produced a clean, repeatable ~3.7x wall-clock gap (and a ~3.2x `cache-misses` gap) between
+the two builds.
+
+**One-line takeaway:** a benchmark meant to isolate one variable (struct layout) can silently
+smuggle in a second, uncontrolled one (either a genuine layout leak past `alignas`, or an
+unrelated true-sharing cost that swamps the effect you're measuring) — a measured null result
+has to be interrogated for "did the control actually control for the thing" before it's trusted
+as "there is no effect," exactly as Phase 1's own exit criteria required.
+
+---
+
 ## Wilson's formula assumes p in [0,1]; two independently-periodized events don't guarantee it
 
 **When:** Gate 5, first real concentration-ranking run against matrix_bad, 2026-08-18.

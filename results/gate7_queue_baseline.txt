@@ -1,0 +1,155 @@
+=== Gate 7 Phase 1: queue benchmark baseline ===
+generated: 2026-08-22T07:48:28Z
+
+--- environment ---
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+kernel: 7.0.0-29-generic
+gcc: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+governor: powersave
+topology (cpu:core_id): cpu0:0 cpu10:4 cpu11:5 cpu1:1 cpu2:2 cpu3:3 cpu4:4 cpu5:5 cpu6:0 cpu7:1 cpu8:2 cpu9:3 
+
+=== U18 evidence: struct layout (static_assert already enforced at compile time) ===
+-- spsc_queue: tail/head offsets --
+  40130b:	48 8b 77 08          	mov    0x8(%rdi),%rsi
+  4013c1:	48 8b b7 08 40 00 00 	mov    0x4008(%rdi),%rsi
+  40134b:	48 8b 77 08          	mov    0x8(%rdi),%rsi
+  401401:	48 8b b7 40 40 00 00 	mov    0x4040(%rdi),%rsi
+(shared: tail=0x4000, head=0x4008 -- 8 bytes apart, one cache line)
+(padded: tail=0x4000, head=0x4040 -- 64 bytes apart, separate cache lines)
+
+=== SPSC queue: padded vs shared, -O1 (attribution build) ===
+-- perf stat -r 5: spsc_queue_shared --
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.639267s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.573534s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.583942s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.582827s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.582662s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/spsc_queue_shared' (5 runs):
+
+       100,173,317      cache-misses                                                            ( +-  0.16% )
+       148,745,831      cache-references                                                        ( +-  0.36% )
+     4,240,917,246      instructions                                                            ( +-  0.00% )
+     6,291,318,576      cycles                                                                  ( +-  0.52% )
+
+       0.593679358 +- 0.011828178 seconds time elapsed  ( +-  1.99% )
+
+
+-- perf stat -r 5: spsc_queue_padded --
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.157602s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.157361s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.157018s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.157557s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.157111s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/spsc_queue_padded' (5 runs):
+
+        30,939,898      cache-misses                                                            ( +-  1.48% )
+        77,561,945      cache-references                                                        ( +-  0.10% )
+     4,207,569,787      instructions                                                            ( +-  0.00% )
+     1,713,314,715      cycles                                                                  ( +-  0.05% )
+
+       0.158392107 +- 0.000149998 seconds time elapsed  ( +-  0.09% )
+
+
+=== SPSC queue: padded vs shared, -O2 (latency-harness build) ===
+-- perf stat -r 5: spsc_queue_shared_O2 --
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.748991s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.749767s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.739330s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.752572s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=shared, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.751756s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/spsc_queue_shared_O2' (5 runs):
+
+       137,199,915      cache-misses                                                            ( +-  0.41% )
+       183,494,767      cache-references                                                        ( +-  0.22% )
+     4,367,046,608      instructions                                                            ( +-  0.01% )
+     8,143,474,268      cycles                                                                  ( +-  0.32% )
+
+       0.749816680 +- 0.002374315 seconds time elapsed  ( +-  0.32% )
+
+
+-- perf stat -r 5: spsc_queue_padded_O2 --
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.161876s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.161854s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.161608s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.165583s  checksum=4999999950000000  expected=4999999950000000  OK
+spsc_queue: build=padded, capacity=1024, items=100000000, producer pinned to CPU 0, consumer pinned to CPU 1
+elapsed: 0.162130s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/spsc_queue_padded_O2' (5 runs):
+
+        32,277,786      cache-misses                                                            ( +-  0.47% )
+        77,872,079      cache-references                                                        ( +-  0.16% )
+     4,308,038,950      instructions                                                            ( +-  0.00% )
+     1,770,975,684      cycles                                                                  ( +-  0.47% )
+
+       0.163752145 +- 0.000756106 seconds time elapsed  ( +-  0.46% )
+
+
+=== MPMC queue (2 producers, 2 consumers): padded vs shared, -O1 ===
+-- perf stat -r 5: mpmc_queue_shared --
+mpmc_queue: build=shared, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 6.597656s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=shared, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 6.621442s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=shared, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 6.537979s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=shared, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 6.443065s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=shared, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 6.499429s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/mpmc_queue_shared' (5 runs):
+
+       838,480,576      cache-misses                                                            ( +-  0.83% )
+       964,525,995      cache-references                                                        ( +-  0.77% )
+     8,085,428,762      instructions                                                            ( +-  0.42% )
+   128,369,182,473      cycles                                                                  ( +-  1.40% )
+
+       6.541286626 +- 0.032419883 seconds time elapsed  ( +-  0.50% )
+
+
+-- perf stat -r 5: mpmc_queue_padded --
+mpmc_queue: build=padded, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 3.156460s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=padded, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 3.163997s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=padded, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 3.165474s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=padded, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 3.157709s  checksum=4999999950000000  expected=4999999950000000  OK
+mpmc_queue: build=padded, capacity=1024, items=100000000, producers=2 (CPUs 0..1), consumers=2 (CPUs 2..3)
+elapsed: 3.159788s  checksum=4999999950000000  expected=4999999950000000  OK
+
+ Performance counter stats for 'benchmarks/mpmc_queue_padded' (5 runs):
+
+       660,952,300      cache-misses                                                            ( +-  0.04% )
+       733,093,460      cache-references                                                        ( +-  0.07% )
+     7,742,619,843      instructions                                                            ( +-  0.02% )
+    68,620,522,962      cycles                                                                  ( +-  0.05% )
+
+       3.162097065 +- 0.001797559 seconds time elapsed  ( +-  0.06% )
+
+
