@@ -1,0 +1,105 @@
+=== Gate 7 Phase 4: the false-sharing experiment ===
+generated: 2026-08-22
+
+--- environment ---
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+kernel: 7.0.0-29-generic
+governor: powersave
+perf_event_paranoid: 1
+
+Target: benchmarks/spsc_queue_shared / spsc_queue_padded (see benchmarks/spsc_queue.cpp).
+n=5 cachelens runs pooled per build. Wilson lower bound (95%) computed on pooled
+(miss, access) sums per site, scaled by each build's own run-averaged period_scale
+(shared avg=0.576033, padded avg=0.353157 -- periods are calibrated fresh per run,
+so this differs from run to run and between builds; pooling with the average scale
+is an approximation stated explicitly, not hidden).
+
+=== Pooled Wilson concentration by source line, sites present in all 5 runs of BOTH builds ===
+
+ line   shared_m   shared_a  shared_wlb   padded_m   padded_a  padded_wlb  rel_change
+  182      42494      45886      0.5321      42389      40767      0.3672      +44.9%
+  188       1689       1840      0.5210        436        217      0.7003      -25.6%
+  157      19407      21440      0.5191        201        934      0.0671     +673.5%
+  180       4034       4725      0.4858        973       1146      0.2921      +66.3%
+  166      91732     113976      0.4623      40809      43338      0.3318      +39.3%
+  164       7710       9628      0.4566        996        748      0.4687       -2.6%
+  162       3729       4869      0.4342        461        778      0.1969     +120.5%
+  172       1772       2324      0.4290        204        296      0.2240      +91.5%
+  154       1365       1913      0.3991       1932       2361      0.2833      +40.9%
+  178      37995      55671      0.3909       3892      10567      0.1268     +208.2%
+  194       6512       9875      0.3744       2543       3789      0.2317      +61.6%
+  190       9261      14961      0.3521       2572       4073      0.2177      +61.7%
+  156       1284       2189      0.3259        355        716      0.1622     +100.9%
+  200       7499      15134      0.2808       6325      16215      0.1351     +107.9%
+  173       2607       5225      0.2796       2963       5232      0.1952      +43.2%
+  153       3584       9026      0.2229       5643      11668      0.1676      +33.0%
+
+Line key (benchmarks/spsc_queue.cpp, current numbering):
+  153  store_tail(): the tail index-update instruction (__atomic_store_n)
+  154  store_tail(): closing brace / ret (one instruction after the tail store)
+  156  store_head(): the head index-update instruction (__atomic_store_n)
+  157  store_head(): closing brace / ret (one instruction after the head store)
+  162  push(): call site for store_tail
+  166  push(): while(seq != pos) spin-wait check (initial + loop-back, same DWARF line)
+  178  pop(): function entry / initial q.head.load()
+  182  pop(): while(seq != pos+1) spin-wait check (initial + loop-back, same DWARF line)
+  188  pop(): call site for store_head
+  194  producer(): loop calling push()
+  200  consumer(): loop calling pop()
+
+Raw miss-count ranking, shared build, pooled: #1 is line 166 (91,732 misses) -- by far
+the largest raw count of any site, consistent with "busiest line wins raw count"
+(matrix_bad's line 43 showed the identical pattern in Gate 5).
+
+Wall-clock, n=5 each (perf stat, results/gate7_queue_baseline.txt): shared 0.622s,
+padded 0.226s -- 2.75x (-O1). -O2: 0.869s vs 0.240s -- 3.62x.
+
+=== Adjudication ===
+
+(a) "concentration ranking places the index-update line at #1": FAILS AS LITERALLY
+STATED, in an explicable way. Neither store_tail (line 153, wilson_lb=0.223 shared)
+nor store_head (line 156, wilson_lb=0.326 shared) ranks #1 -- both sit in the lower
+half of the table. The actual #1 among statistically reliable (order-10^4-sample)
+sites is line 182 (pop's spin-wait check, wilson_lb=0.532). But line 157 -- the
+single instruction immediately after store_head's real store -- ranks a close #2-3
+(wilson_lb=0.519, on 21,440 pooled access samples, not a low-n fluke) AND shows by
+far the largest RELATIVE response to the false-sharing condition of any line in the
+table: +673.5%, from a padded-build value (0.067) near the very bottom of the table
+to a shared-build value in the top 3. This is the cleanest single piece of evidence
+in this dataset that the effect is real and specifically localized: it is one x86
+instruction downstream of the literal write this experiment is about, consistent
+with `precise_ip=0`'s unbounded-but-typically-small skid (this project has
+previously measured 99.99% within +-2 lines on a different workload) landing
+one instruction past the actual event rather than exactly on it.
+
+(b) "raw miss-count ranking does not place the index-update line at #1": true, but
+not meaningfully confirmatory the way it was meant to be. Raw count's #1 (line 166)
+is a THIRD line, distinct from both the literal index-update lines and from
+concentration's own #1 (line 182) -- concentration and raw count do disagree with
+each other, reproducing this project's core methodological point on a second,
+structurally different workload, but neither one isolates the specific bug as
+cleanly as Gate 5's matrix result did.
+
+(c) "the padded queue shows neither the wall-clock cost nor the concentration
+signal": CONFIRMED for wall-clock (padded is 2.75x-3.62x faster, every measurement).
+PARTIALLY CONFIRMED for concentration: 14 of 16 reliably-sampled lines show a real,
+positive increase under contention (median +58%), consistent with false sharing
+creating broad memory-system pressure rather than a perfectly localized signal --
+but the single largest and cleanest differential (line 157, +673.5%) sits exactly
+where the mechanism predicts it should, one instruction from the literal write.
+Two lines (164, 188) show a negative or flat relative change; both have small
+pooled sample counts (164: 748-9628 access; 188: 217-1840) and are read as noise,
+not as evidence against the effect, consistent with why the Wilson bound and the
+30-sample gate exist in the first place.
+
+=== What this changes about how the prediction can be claimed ===
+
+Gate 4's skid characterization ("99.99% within +-2 lines") was measured on a
+7-instruction, 2-source-line hot loop body -- almost the entire function was the
+hot line, so skid had almost nowhere else to land. This workload's push()/pop()
+span 10+ source lines each, giving skid real room to move, and it visibly does:
+the strongest signal in this dataset sits one line away from the literal target,
+not on it. The honest reading is not "concentration failed to find the bug" -- it
+is "concentration found a site immediately adjacent to the bug, and a raw-count
+ranking of the same run would not have."

@@ -7,6 +7,194 @@ back it up if asked to go deeper.
 
 ---
 
+## Profiling made the target faster, not slower, and the measurement to explain why wasn't good enough to trust
+
+**When:** Gate 7 Phase 6, measuring CacheLens's own profiling overhead, 2026-08-22.
+
+**The surprise:** 5 interleaved paired trials (standalone vs. under CacheLens, same benchmark,
+same machine, back to back) showed the target's own self-reported wall-clock time ~17% *lower*
+under CacheLens, every single trial. Not overhead -- the opposite of overhead, and the opposite
+of this project's own prior finding that background load biases results upward.
+
+**What didn't get done, and why that's the right call:** proposed a mechanism (tens of thousands
+of PMU sampling interrupts per second interacting with the `powersave` governor's frequency
+selection) and tried to check it directly by polling `scaling_cur_freq` during both scenarios.
+The attempt failed on timing precision -- a ~0.58s benchmark is too fast to reliably synchronize
+against 0.1s-granularity shell polling, and one sample was caught after the process had already
+exited. Rather than re-run with better tooling or quietly drop the frequency-check attempt from
+the writeup, both the surprising result and the failed verification attempt are recorded as-is
+in `results/gate7_drain.txt`.
+
+**One-line takeaway:** a plausible mechanism you can name is not the same as a mechanism you've
+checked -- report the honest gap between "here's what I observed" and "here's why," especially
+when the obvious explanation (profiling = overhead) turns out to be wrong.
+
+---
+
+## The "performance" governor gave the worse tail, and the null result that predicted otherwise didn't apply
+
+**When:** Gate 7 Phase 5, re-asking Gate 5's governor question for a latency-sensitive workload,
+2026-08-22.
+
+**The surprise:** Gate 5 found governor (`performance` vs `powersave`) doesn't matter for a
+memory-stalled matrix workload — a real null result, confirmed via IPC. Phase 5's plan explicitly
+flagged that this should be re-tested, not inherited, for a latency harness. It was right to
+insist: p50/p99 stayed governor-insensitive (matching Gate 5's direction), but the *tail*
+diverged sharply, and in the opposite direction intuition suggests a governor named "performance"
+should give. `performance` produced a *lower* typical p99.9 but wildly inconsistent run-to-run
+behavior, including a 1.85ms outlier (~25,000x the median) in one of five runs. `powersave` gave
+a *higher* but strikingly consistent p99.9 — under 3% spread across five separate runs.
+
+**Not fully explained, and not pretended to be.** A plausible mechanism (sustained max-frequency
+operation increasing exposure to turbo/thermal transition stalls, which `powersave`'s more
+conservative operating point avoids) is recorded as a hypothesis in `results/gate7_latency.txt`,
+explicitly not verified against thermal telemetry in this pass.
+
+**One-line takeaway:** a null result from one workload class (compute/memory-bound throughput)
+is not evidence for the same null on a different class (tail latency) — the plan's own
+instruction to re-ask rather than inherit is what surfaced a real, counter-intuitive effect that
+assuming the prior result would have hidden entirely.
+
+---
+
+## A failed pre-registered prediction, and the one-instruction skid that explains it
+
+**When:** Gate 7 Phase 4, adjudicating the false-sharing prediction against the SPSC queue,
+2026-08-22.
+
+**The prediction failure:** `docs/GATE7_PLAN.md` §0 pre-registered, before any measurement,
+that concentration ranking would place the queue's index-update store at #1. It didn't — in five
+pooled runs, the top slot went to a spin-wait check line instead, and both literal index-update
+instructions (`store_tail`, `store_head`) ranked in the lower half of the table.
+
+**What made it worth trusting instead of dismissing:** comparing the padded and unpadded builds
+line-by-line (not just looking at the unpadded build's top line in isolation) surfaced that the
+single largest *relative* change of any line in the entire function — a 673% jump between builds,
+on 21,440 pooled access samples, not a low-count fluke — landed on the one x86 instruction
+immediately *after* `store_head`'s actual store. That is one instruction of skid, and this
+project already had a baseline to compare against: Gate 4 measured 99.99% skid containment within
+±2 source lines, but on a 7-instruction, 2-line hot loop that left skid almost nowhere else to
+go. This queue's `push()`/`pop()` span ten-plus lines each. Skid had room to move this time, and
+the padded-vs-unpadded differential — not the raw ranking alone — is what showed where it went.
+
+**One-line takeaway:** a ranking that "gets the wrong line" is not automatically evidence the
+tool failed — compare the SAME line across a treatment/control pair before concluding that, the
+way this project's own methodology already insists on doing for wall-clock numbers. The line
+that moved the most between builds, not the line that ranked highest in one build alone, is what
+told the real story here.
+
+---
+
+## Two different atomic stores can share one line in the debug info — `noinline` on the caller doesn't fix it
+
+**When:** Gate 7 Phase 3, characterizing skid for the queue workload before running the
+false-sharing experiment, 2026-08-22.
+
+**The bug:** the pooled raw-miss-count distribution for `spsc_queue_padded` never showed source
+line 140 (`q.tail.store(...)`) or line 156 (`q.head.store(...)`) at all — the exact two lines the
+entire Gate 7 false-sharing prediction is about. `objdump -dlC` (source-annotated disassembly)
+showed why: GCC inlined `std::atomic<uint64_t>::store()` from *both* that store and an unrelated,
+nearby `cell.sequence.store()` call, and both inlined instances shared the identical DWARF
+line-table entry (`atomic_base.h:477`, the header's own line for the template body) — with no
+separate entry for either call site. `precise_ip=0`'s usual skid (the sampled IP landing a few
+instructions past the true one) was not the mechanism here at all; this was two semantically
+different operations resolving to the same reported location because they're the same template
+instantiation. Wrapping the call sites in dedicated `__attribute__((noinline))` functions did
+*not* fix it — noinline only stops a function from being inlined into *its callers*, it does
+nothing to stop that function from inlining what *it* calls, and `std::atomic::store()` is a
+tiny header-defined template GCC will inline into the wrapper regardless.
+
+**The fix:** replace `q.tail.store(v, order)` inside the wrapper with
+`__atomic_store_n(reinterpret_cast<uint64_t*>(&q.tail), v, __ATOMIC_RELAXED)` — a compiler
+builtin, not a real function with its own source location, so it carries no inline-subroutine
+debug info to compete with the wrapper's own line. Verified via `objdump` before trusting it:
+the store instruction now resolves to the wrapper's own line, and `store_tail`'s and
+`store_head`'s lines are now distinct from each other and from the unrelated per-slot store.
+
+**One-line takeaway:** "no inline-frame expansion" (already a documented limitation) isn't only
+a call-site-vs-callee ambiguity — two *different* call sites into the *same* tiny inlined
+library function can collapse onto one shared debug-info location, silently merging two
+operations a profiler's whole point is to tell apart. `noinline` on your own code doesn't reach
+into what a library header inlines into you; check with `objdump -dlC`, don't assume from the
+source that a `noinline` boundary is where DWARF attribution actually stops.
+
+---
+
+## A per-CPU counter's own multiplexing ratio looks exactly like contention when a thread just migrates
+
+**When:** Gate 7 Phase 2, first run of the rewritten per-CPU sampler against `matrix_bad` (a
+regression guard against Gate 5's headline), 2026-08-22.
+
+**The bug:** the single-ring sampler's existing halt check ("multiplexing fraction
+`time_running/time_enabled` must be >= 0.99, per event") was ported to the new per-CPU design as
+a per-(event, CPU) check. First run halted immediately: `miss@cpu0 multiplexing fraction 0.1877`.
+`matrix_bad` is single-threaded and unpinned, so the OS scheduler moves it across CPUs over its
+~12-second run — printing the raw numbers showed why that broke the check: `time_enabled` was
+identical (13,703,492,089 ns) on every one of the 9 CPUs the thread ever touched, because
+`time_enabled` tracks wall-clock since the event armed at `execve`, independent of which CPU is
+current. `time_running` varied wildly per CPU (5.47s on cpu0, 7.67s on cpu1, as little as 2.8ms on
+cpu3) because it only counts time actually scheduled on *that specific* CPU. A CPU the thread
+passed through for 2.8ms out of a 13.7s run reads back a 0.0002 "multiplexing fraction" that has
+nothing to do with PMU contention — it is a perfectly ordinary migration.
+
+**The fix:** sum `time_running` across every per-CPU ring for an event before comparing to
+`time_enabled` (using any one ring's value — they're identical). This reconstructs the thread's
+true total scheduled time regardless of which CPU it was on at any given instant. Verified against
+the actual numbers before trusting the fix: the nine per-CPU `time_running` values for the `miss`
+event summed to exactly 13,703,492,089 ns — bit-for-bit equal to `time_enabled` — confirming zero
+genuine contention, the same conclusion the single-ring design's check was built to reach, just
+computed correctly for a task that isn't pinned to one CPU.
+
+**One-line takeaway:** a per-resource ratio (this counter's own scheduled-time fraction) can be a
+correct signal in one topology (one shared resource, `cpu=-1`) and a completely different question
+in another (N per-CPU resources) — porting the check without re-deriving what "contention" even
+means in the new topology reads a scheduler's ordinary behavior as a fatal PMU failure.
+
+---
+
+## `alignas(64)` pads a field's start, not its extent — and a naive false-sharing benchmark can hide its own bug
+
+**When:** Gate 7 Phase 1, building the SPSC queue benchmark for the false-sharing case study,
+2026-08-22.
+
+**The bug (two, actually, stacked on top of each other):** first attempt at a "padded" queue
+struct used `alignas(64) std::atomic<uint64_t> head; alignas(64) std::atomic<uint64_t> tail;`
+followed by a `uint64_t buffer[capacity]` member. `alignas(64)` only forces that *field's own*
+start address to a 64-byte boundary — it does not reserve the rest of the line. Since `tail` is
+only 8 bytes, `buffer`'s first six `uint64_t` elements packed into the unused 56 bytes of
+`tail`'s own cache line, so the "padded" build was still false-sharing `tail` against
+`buffer[0..6]`, just as badly as the intentionally-unpadded build. Wall-clock A/B showed no
+delta — not because the effect wasn't there, but because the "control" arm hadn't actually
+controlled for the variable it claimed to.
+
+**The second bug, uncovered only after fixing the first:** even with `tail`/`head` correctly
+isolated (explicit trailing padding bytes added to consume the full 64 bytes), the padded and
+unpadded builds *still* measured within 2% of each other. Root cause was the benchmark's logic,
+not the struct layout: push()/pop() unconditionally reloaded both atomics on every call, which is
+heavy *true* sharing (a real, necessary cross-core read every single call, needed regardless of
+which cache line anything sits on) that swamps the marginal *false*-sharing cost of adjacency.
+Switching to the standard "cache the other side's last-observed index locally, refill only on a
+miss" optimization didn't fix it either — instrumented refill counts showed the consumer refilling
+on 75% of calls regardless of buffer capacity, because with producer and consumer doing
+near-identical per-item work, whichever side is even slightly faster exhausts its cached view on
+almost every call, which is a property of relative thread speed, not of struct layout.
+
+**The fix:** adopt the technique real lock-free queues (Vyukov's bounded MPMC design,
+`boost::lockfree::queue`) actually use for this reason: decide readiness/fullness from a
+per-slot sequence number stored *with the data*, never by reading the other thread's index
+directly. That makes `head` written and read only by the consumer, `tail` written and read only
+by the producer — structurally identical to two independent, never-cross-read counters — which is
+what produced a clean, repeatable ~3.7x wall-clock gap (and a ~3.2x `cache-misses` gap) between
+the two builds.
+
+**One-line takeaway:** a benchmark meant to isolate one variable (struct layout) can silently
+smuggle in a second, uncontrolled one (either a genuine layout leak past `alignas`, or an
+unrelated true-sharing cost that swamps the effect you're measuring) — a measured null result
+has to be interrogated for "did the control actually control for the thing" before it's trusted
+as "there is no effect," exactly as Phase 1's own exit criteria required.
+
+---
+
 ## Wilson's formula assumes p in [0,1]; two independently-periodized events don't guarantee it
 
 **When:** Gate 5, first real concentration-ranking run against matrix_bad, 2026-08-18.

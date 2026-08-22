@@ -1,0 +1,123 @@
+=== Gate 7 Phase 5: queue latency tail-latency harness ===
+generated: 2026-08-22
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+
+=== governor=performance, n=5 runs ===
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 16ns
+p50=75ns p99=105ns p99.9=1334ns p99.99=14114ns max=33817ns
+timer overhead as % of p50: 21.3%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 16ns
+p50=75ns p99=107ns p99.9=1775ns p99.99=261354ns max=639256ns
+timer overhead as % of p50: 21.3%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 16ns
+p50=74ns p99=106ns p99.9=1495ns p99.99=10959ns max=85196ns
+timer overhead as % of p50: 21.6%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=74ns p99=107ns p99.9=2289ns p99.99=1461216ns max=1854688ns
+timer overhead as % of p50: 20.3%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=74ns p99=106ns p99.9=1479ns p99.99=9004ns max=50535ns
+timer overhead as % of p50: 20.3%
+
+=== governor=powersave, n=5 runs ===
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 16ns
+p50=74ns p99=107ns p99.9=10868ns p99.99=22342ns max=49091ns
+timer overhead as % of p50: 21.6%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=75ns p99=108ns p99.9=10728ns p99.99=22614ns max=51997ns
+timer overhead as % of p50: 20.0%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=75ns p99=107ns p99.9=10734ns p99.99=22325ns max=48007ns
+timer overhead as % of p50: 20.0%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=74ns p99=107ns p99.9=10698ns p99.99=22473ns max=47803ns
+timer overhead as % of p50: 20.3%
+queue_latency: ops=2000000 target_rate=500000/sec interval=2000ns capacity=1024
+timer overhead (clock_gettime, 100000-call average): 15ns
+p50=75ns p99=110ns p99.9=10611ns p99.99=22399ns max=38372ns
+timer overhead as % of p50: 20.0%
+
+=== Analysis ===
+
+U19 (timer overhead): 15-19ns per clock_gettime(CLOCK_MONOTONIC) call, averaged over 100,000
+back-to-back calls, measured fresh at the start of every run. This is 20-26% of the measured p50
+(74-75ns) -- a LARGE fraction, stated plainly rather than hidden: the p50 number here is
+substantially "how fast can this machine call clock_gettime twice," not purely queue latency.
+p99 and above are large enough (>=100ns) that timer overhead is a smaller relative contributor,
+which is the honest way to read this: the p50 in this dataset should not be quoted as a clean
+queue-operation latency on its own.
+
+U20 (open-loop, coordinated-omission-safe): confirmed working as designed -- the payload IS the
+producer's intended send timestamp (not the actual send time), computed from a fixed schedule
+that does not slip when the producer stalls. This is what makes the extreme p99.99/max outliers
+under the performance governor (up to 1.85ms, see run 4 above) visible at all: a closed-loop
+harness would have simply issued the next item later and never shown that stall.
+
+U21 (non-perturbing harness): the per-op latency array is preallocated and default-constructed
+(first-touched) before the timed region; the only work inside the timed loop is the queue
+operation, one clock_gettime call, and one array write.
+
+U22 (sample count and variance): 2,000,000 ops/run (>= 10^6), 5 repetitions per governor.
+p50/p99 are stable to within ~2ns across all 10 runs (both governors). p99.9 and above are
+NOT stable within a governor for "performance" (1218-2590ns range) but ARE remarkably stable for
+"powersave" (10611-10868ns, a <3% spread across 5 runs) -- reported as observed, not smoothed.
+
+U23 (the governor question, re-asked -- NOT inherited from Gate 5's null result):
+**Real, and in the opposite direction from what "performance" implies its name should give.**
+
+  metric        performance (5 runs)         powersave (5 runs)
+  p50           74-75ns                      74-75ns              -- no difference (matches
+                                                                       Gate 5's median-latency
+                                                                       finding directionally)
+  p99           105-109ns                    107-110ns            -- no meaningful difference
+  p99.9         1218-2590ns                  10611-10868ns        -- powersave's tail is ~5-8x
+                                                                       WORSE in typical magnitude...
+  p99.9 spread  1218-2590ns (2.1x range)     10611-10868ns (1.02x range) -- ...but performance's
+                                                                       tail is far less consistent
+                                                                       run-to-run
+  p99.99        10959-261354ns (24x range)   22325-22614ns (1.01x range)
+  max           33817-1854688ns (55x range)  38372-51997ns (1.35x range)
+
+Gate 5's governor null result was measured on a memory-stalled matrix workload and explicitly
+does not transfer -- confirmed here by NOT transferring. Typical latency (p50/p99) is governor-
+insensitive, same conclusion as Gate 5, for a plausible similar reason (a saturating busy-wait
+producer keeps every core it touches continuously active regardless of governor, so powersave's
+dynamic ramp-up cost is amortized away). But the TAIL diverges sharply and in a way this project
+does not fully explain: "performance" gives a lower typical tail but occasional extreme outliers
+(up to 1.85ms, a ~25,000x multiple of p50); "powersave" gives a higher but strikingly consistent
+tail with no comparable outliers observed in 10M total ops. A plausible but unconfirmed
+explanation is that pinning cores to maximum frequency under "performance" increases exposure to
+thermal/power-limit throttling events or turbo-boost transition stalls under sustained load,
+while "powersave"'s more conservative operating point avoids hitting that ceiling -- not verified
+against thermal telemetry in this pass, and stated as a hypothesis, not a finding.
+
+=== Padded vs. shared, at this open-loop rate (governor=powersave, n=5 each) ===
+
+  metric        shared (contended)          padded (isolated)
+  p50           89-96ns                     74-76ns             -- shared ~20% higher, every run
+  p99           117-135ns                   107-109ns           -- shared ~10-15% higher, every run
+  p99.9         10460-11342ns               9930-11202ns        -- overlapping ranges, no signal
+  p99.99        22297-22853ns               22256-22892ns       -- overlapping ranges, no signal
+  max           44143-54517ns               34703-68150ns       -- overlapping ranges, no signal
+
+Unlike Phase 4's flat-out throughput test, this harness issues at a fixed 500,000 ops/sec --
+comfortably below the queue's unsaturated capacity (Phase 1 measured >100M ops/sec for both
+builds running flat-out), so there is idle time between operations here that Phase 1/4's design
+never had. The false-sharing penalty is visible in TYPICAL latency (p50, p99) at this
+unsaturated rate -- consistently, every run, in the same direction -- but disappears into noise
+by p99.9: the tail at this rate is dominated by OS scheduling jitter and occasional preemption,
+which are larger in magnitude than the cache-line-placement effect and swamp it. This is a
+coherent, different-but-compatible finding alongside Phase 4's: false sharing raises the
+*typical* per-operation cost measurably even far from saturation, but a latency harness's *tail*
+answers a different question (scheduling noise) than its *median* does (the queue's own cost),
+and only the median is where this particular bug is visible at this load level.

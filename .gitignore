@@ -10,6 +10,16 @@ perf.data.old
 benchmarks/matrix_good
 benchmarks/matrix_bad
 benchmarks/pointer_chase
+benchmarks/spsc_queue_shared
+benchmarks/spsc_queue_padded
+benchmarks/spsc_queue_shared_O2
+benchmarks/spsc_queue_padded_O2
+benchmarks/mpmc_queue_shared
+benchmarks/mpmc_queue_padded
+benchmarks/mpmc_queue_shared_O2
+benchmarks/mpmc_queue_padded_O2
+benchmarks/queue_latency_padded
+benchmarks/queue_latency_shared
 *.dSYM/
 
 # Editor

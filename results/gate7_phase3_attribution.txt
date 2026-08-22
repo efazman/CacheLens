@@ -1,0 +1,48 @@
+=== Gate 7 Phase 3: attribution under threads ===
+generated: 2026-08-22T08:16:12Z
+
+--- U9: skid/attribution characterization, spsc_queue_padded, n=5 pooled runs ---
+Pooled raw miss-count distribution across all attributed source lines in
+push()/pop()/producer()/consumer() (spsc_queue.cpp), uncontended (padded) build:
+
+  line 200:     8567  (7.3%)
+  line 194:     3090  (2.6%)
+  line 190:     3999  (3.4%)
+  line 188:      833  (0.7%)
+  line 187:      141  (0.1%)
+  line 186:       12  (0.0%)
+  line 182:    42441  (36.3%)
+  line 180:     1023  (0.9%)
+  line 178:     1991  (1.7%)
+  line 173:     2727  (2.3%)
+  line 172:      230  (0.2%)
+  line 171:      260  (0.2%)
+  line 170:       52  (0.0%)
+  line 166:    42696  (36.6%)
+  line 164:      882  (0.8%)
+  line 162:     1068  (0.9%)
+  line 157:      212  (0.2%)
+  line 156:      336  (0.3%)
+  line 154:     1225  (1.0%)
+  line 153:     5006  (4.3%)
+  TOTAL pooled raw miss samples: 116791
+
+Line key (see benchmarks/spsc_queue.cpp):
+  153 store_tail body (the tail index-update instruction)
+  156 store_head body (the head index-update instruction)
+  166 push(): while(seq != pos) spin-check (initial + loop-back, same DWARF line)
+  182 pop():  while(seq != pos+1) spin-check (initial + loop-back, same DWARF line)
+  172/188 push()/pop() call sites for store_tail/store_head
+  194/200 producer()/consumer() loop lines (call site + loop control)
+
+Finding: lines 166 and 182 (the spin-wait checks) alone absorb ~73% of all raw
+miss samples combined, because they execute at least once on every one of 100M
+calls each -- a call-frequency artifact, not evidence of a true bottleneck there.
+This is the same raw-count bias Gate 5's whole concentration methodology exists
+to correct for, now reproduced in a structurally different workload.
+
+store_tail (153) and store_head (156) -- cleanly isolated onto their own lines
+after the Phase 3 attribution fix (see git log) -- get 4.3% and 0.3% of raw
+samples respectively. This asymmetry between two structurally symmetric
+operations (one on the producer's CPU, one on the consumer's) is not fully
+explained; left as an open question rather than papered over.

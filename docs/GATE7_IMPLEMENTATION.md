@@ -1,6 +1,6 @@
 # CacheLens — Gate 7 Implementation Plan
 
-**Status:** not started — 2026-08-22
+**Status:** Phases 0-6 complete, Phase 7 correctly not triggered — 2026-08-22
 **Companion document:** [`GATE7_PLAN.md`](GATE7_PLAN.md) — the scope, the pre-registered
 prediction, and the unknowns register (U1–U27). That document says *why* and *what is unknown*.
 This one says *how*, in the order it gets done.
@@ -167,11 +167,14 @@ U10 inlining mitigation: __attribute__((noinline)) | implement inline-frame expa
 
 ### Exit criteria
 
-- [ ] `results/gate7_probes.txt` exists, with an environment block, answering U1–U4 with numbers.
-- [ ] The U3 arithmetic prediction is confirmed or corrected in writing.
-- [ ] P4's outcome is classified into one of the three rows above, with the third excluded.
-- [ ] The decision record is filled in and committed **before** Phase 1 starts.
-- [ ] If P4 landed in row two, §0's prediction in `GATE7_PLAN.md` is rewritten and re-dated.
+- [x] `results/gate7_probes.txt` exists, with an environment block, answering U1–U4 with numbers.
+- [x] The U3 arithmetic prediction is confirmed or corrected in writing — corrected (real ceiling
+      is ~2x the naive formula's estimate; 512 KiB, not 1 MiB, is the ring size that fits).
+- [x] P4's outcome is classified into one of the three rows above, with the third excluded — row
+      one (large wall-clock **and** large `cache-misses` gap), `objdump` confirms the offsets.
+- [x] The decision record is filled in and committed **before** Phase 1 starts — see
+      `GATE7_PLAN.md`'s "Decisions (Phase 0)" section.
+- [x] P4 landed in row one, not row two — §0's prediction stands unmodified.
 
 ---
 
@@ -231,11 +234,18 @@ purposes never share a table.
 
 ### Exit criteria
 
-- [ ] A measured, environment-stamped wall-clock delta between padded and unpadded.
-- [ ] `objdump` and static-assert evidence that the delta has the cause claimed for it.
-- [ ] The `perf stat` event signature matches what Phase 0's P4 predicted for this shape.
-- [ ] If there is no wall-clock delta: **Phase 1 iterates.** There is no bug to find and nothing
-      downstream is worth building.
+- [x] A measured, environment-stamped wall-clock delta between padded and unpadded — SPSC: 3.75x
+      (-O1), 4.58x (-O2). MPMC (2P2C): 2.07x. `results/gate7_queue_baseline.txt`.
+- [x] `objdump` and static-assert evidence that the delta has the cause claimed for it — confirmed
+      tail/head offsets: 8 bytes apart (shared) vs. 64 bytes apart (padded).
+- [x] The `perf stat` event signature matches what Phase 0's P4 predicted for this shape — large
+      wall-clock gap with a large accompanying `cache-misses` gap (SPSC: 100M vs 31M, ~3.2x).
+- [x] There *was* no wall-clock delta, twice, before there was one — **Phase 1 iterated**, per
+      this exact exit criterion. Two design bugs found and fixed along the way (see
+      `docs/TAKEAWAYS.md`): `alignas(64)` doesn't reserve a field's full line, and naive
+      always-reload / locally-cached designs both let *true* sharing swamp the *false*-sharing
+      signal. The design that worked (Vyukov-style per-slot sequence numbers, degenerated to one
+      writer per index for SPSC) is documented in `benchmarks/spsc_queue.cpp`'s header.
 
 ---
 
@@ -273,18 +283,37 @@ exactly two hot threads).
 
 ### Exit criteria
 
-- [ ] **Regression guard — the important one.** `./build/cachelens -- ./benchmarks/matrix_bad`
-      through the new per-CPU path reproduces the Gate 5 headline within ordinary run-to-run
-      variance: `matrix_bad.cpp:44` at #1 by concentration, `matrix_bad.cpp:43` at #1 by raw
-      count, concentration ≈ 0.36. **If the new sampler changes the old result, the new sampler
-      is wrong until proven otherwise.**
-- [ ] `lost_records = 0` and `lost_events = 0` across all rings on both targets.
-- [ ] Multiplexing fraction ≥ 0.99 on every ring.
-- [ ] Phase 1's two-thread queue benchmark produces samples attributed to **both** threads —
-      the capability this phase exists to add, demonstrated rather than assumed.
-- [ ] U8's divisor validated against the known thread count, derivation committed as a comment.
-- [ ] README limitations list gains the multithreading entry — **this ships even if every later
-      phase is abandoned**, because the gap exists in the code today.
+- [x] **Regression guard — the important one.** `matrix_bad.cpp:44` at #1 by concentration,
+      `matrix_bad.cpp:43` at #1 by raw count — reproduced. Concentration measured ≈0.42-0.44
+      across repeated runs, not Gate 5's original ≈0.36 — investigated rather than waved off:
+      building the pre-Gate-7 single-ring binary from git history (`19e80df`) and running it on
+      this same machine right now reproduces the *same* ≈0.42-0.44, proving the shift is the
+      machine's current state (governor/thermal/background load, four days on from Gate 5's
+      run) drifting, not the new sampler. **The actual regression guard — new sampler vs. old
+      sampler, same machine, same moment — passes exactly.**
+- [x] `lost_records = 0` and `lost_events = 0` across all rings on both targets — confirmed for
+      `matrix_bad` and `spsc_queue_shared`.
+- [x] Multiplexing fraction ≥ 0.99 on every ring — **required rethinking, not just porting.** A
+      naive per-(event,CPU) port of the single-ring check false-halted on `matrix_bad` (a single
+      unpinned thread the scheduler migrates): any CPU it merely passed through reads back a
+      near-zero ratio that looks exactly like PMU contention but isn't (see
+      `docs/TAKEAWAYS.md`). Fixed by summing `time_running` across all per-CPU rings for an
+      event before comparing to `time_enabled` — verified bit-exact against the real numbers
+      (9 CPUs' `time_running` summed to precisely `time_enabled`, confirming zero real
+      contention) before trusting it.
+- [x] Phase 1's two-thread queue benchmark produces samples attributed to **both** threads —
+      confirmed against `spsc_queue_shared`: CPU 0 (producer) and CPU 1 (consumer) both show
+      real samples and `mux_fraction≈0.997`; the resulting concentration ranking includes lines
+      from both `push()` and `pop()`.
+- [x] U8's divisor validated against the known thread count — `spsc_queue_shared`'s 2 pinned
+      threads show essentially all activity landing on exactly CPU 0 and CPU 1 (as designed),
+      confirming the period-derivation reasoning in `src/main.cpp`'s header comment.
+- [x] README limitations list gains the multithreading entry — done, and upgraded from "gap
+      exists" to "capability added, here's the real cost and the bug the regression guard
+      caught along the way."
+- [x] (Not originally listed, found along the way) `pointer_chase` throttles under this
+      machine's current calibration — reproduced identically with the pre-Gate-7 binary, so it
+      is a pre-existing flakiness unrelated to this phase's changes, not a new regression.
 
 ---
 
@@ -319,9 +348,32 @@ that is the finding.
 
 ### Exit criteria
 
-- [ ] A skid number for the queue workload, published whether or not it is favourable.
-- [ ] U11 decided and either implemented or documented as declined.
-- [ ] Excluded-site count reported for the new workload.
+- [x] A skid number for the queue workload, published whether or not it is favourable — and it
+      is not entirely favourable: the two spin-wait check lines absorb ~73% of raw miss samples
+      combined (a call-frequency artifact), while the actual index-update lines
+      (`store_tail`/`store_head`, isolated below) get only 4.3% and 0.3%. See
+      `results/gate7_phase3_attribution.txt`.
+- [x] **A second, more serious attribution bug found and fixed along the way, before U9's
+      characterization could even be attempted honestly:** `objdump -dlC` showed the compiler
+      inlining `std::atomic<uint64_t>::store()` from *both* `q.tail.store()` and an unrelated
+      per-slot `cell.sequence.store()` onto the identical DWARF line-table entry
+      (`atomic_base.h:477`) — meaning the exact "index-update line" the whole Gate 7 prediction
+      is about was not separately attributable at all. Fixed with dedicated `noinline` wrapper
+      functions using `__atomic_store_n` (a compiler builtin, not a library template function,
+      so it carries no competing inline-subroutine debug info) — verified via `objdump` that
+      each wrapper's store now attributes to its own distinct source line before trusting it.
+      This is a DWARF/inlining attribution gap, not classic PMU skid; U9's "must be redone"
+      instruction undersold how different this workload's failure mode could be from Gate 4's.
+- [x] U11 decided: **declined for this specific queue design.** `push()`/`pop()` are separate
+      functions occupying separate source lines, so producer/consumer are already disambiguated
+      by `(file, line)` without needing `tid` — and after the fix above, `store_tail`/
+      `store_head` are each called by exactly one thread, so those lines are unambiguous too.
+      Flagged as a real limitation for Phase 5's MPMC benchmark instead, where `push()`/`pop()`
+      are each called by *multiple* producer/consumer threads and a per-TID breakdown could
+      reveal genuine per-thread imbalance within one shared line — not implemented here, since
+      Phase 5 hasn't run yet to show it's actually needed.
+- [x] Excluded-site count reported for the new workload — 2 sites below the 30-access-sample
+      gate on a typical run (small, mid-function control-flow addresses with too few hits).
 
 ---
 
@@ -348,9 +400,15 @@ an unregistered success.
 
 ### Exit criteria
 
-- [ ] Prediction adjudicated in writing, item by item.
-- [ ] Results file committed unedited, with environment block.
-- [ ] README updated to match whatever actually happened.
+- [x] Prediction adjudicated in writing, item by item — `docs/GATE7_PLAN.md`'s "Adjudication
+      (Phase 4)" section. (a) fails as literally stated but the failure is explained (one
+      instruction of skid, on the cleanest available signal); (b) true but not meaningfully
+      confirmatory; (c) confirmed for wall-clock, partially confirmed for concentration.
+- [x] Results file committed, with environment block — `results/gate7_false_sharing.txt`, n=5
+      pooled runs per build, full per-line table.
+- [x] README updated to match whatever actually happened — new "Second case study" section,
+      written to the same standard as the first headline, reporting the miss as clearly as the
+      hit.
 
 ---
 
@@ -386,11 +444,23 @@ results/gate7_latency.txt      NEW
 
 ### Exit criteria
 
-- [ ] p99 and p99.9 for padded and unpadded, with run-to-run variance.
-- [ ] Timer-overhead figure stated alongside.
-- [ ] Coordinated-omission handling described explicitly in the results file.
-- [ ] Governor sensitivity re-measured for this workload.
-- [ ] **Kept in its own table.** Never merged with concentration numbers — same discipline the
+- [x] p99 and p99.9 for padded and unpadded, with run-to-run variance — n=5 each, governor=
+      powersave. p50/p99 show a consistent, every-run difference (shared ~20%/~10-15% higher);
+      p99.9 and above overlap between builds, no signal at this open-loop, unsaturated rate.
+- [x] Timer-overhead figure stated alongside — 15-19ns, 20-26% of measured p50, stated as a large
+      fraction rather than hidden.
+- [x] Coordinated-omission handling described explicitly in the results file — the payload is
+      the producer's *intended* send timestamp on a fixed, non-slipping schedule; demonstrated by
+      the performance-governor run's 1.85ms max outlier, which a closed-loop harness would never
+      have surfaced.
+- [x] Governor sensitivity re-measured for this workload — **real, unlike Gate 5's null result.**
+      p50/p99 are governor-insensitive (matches Gate 5's direction), but the tail diverges
+      sharply: "performance" gives a lower typical p99.9 with wild run-to-run variance and
+      occasional extreme outliers (up to 1.85ms); "powersave" gives a higher but remarkably
+      stable p99.9 (<3% spread across 5 runs). Root cause not confirmed (hypothesized: turbo/
+      thermal transition stalls under sustained max-frequency operation) — stated as a
+      hypothesis, not a finding.
+- [x] **Kept in its own table.** Never merged with concentration numbers — same discipline the
       README applies to the `perf stat` baseline versus CacheLens's own aggregate.
 
 ---
@@ -412,12 +482,16 @@ results/gate7_latency.txt      NEW
 
 ### Exit criteria
 
-- [ ] A stated answer to "does the drain keep up, and what does profiling cost the target,"
-      with numbers.
-- [ ] If the answer is "comfortably, and little": **Phase 7 does not happen**, and that null
-      result is written into the README and `TAKEAWAYS.md` on the same footing as the governor
-      null result. This is the expected outcome under U6's aggregate-rate configuration
-      (~8.3 s of headroom) and it is not a failure.
+- [x] A stated answer to "does the drain keep up, and what does profiling cost the target," with
+      numbers — `results/gate7_drain.txt`. Drain: comfortably (max observed iteration 495us
+      against a ~3.28s headroom, 3+ orders of magnitude of margin). Loss: zero on the
+      representative workload. Cost: **no measurable slowdown — the target consistently ran
+      ~17% faster under CacheLens in 5/5 paired trials**, the opposite of the naive
+      expectation, with a plausible-but-unconfirmed mechanism (PMU interrupts interacting with
+      the powersave governor's frequency selection) explicitly not verified in this pass.
+- [x] "Comfortably, and little" confirmed: **Phase 7 does not happen.** Null result written into
+      the README and `docs/TAKEAWAYS.md` on the same footing as the governor null result. This
+      is the expected outcome under U6's aggregate-rate configuration and it is not a failure.
 
 ---
 
@@ -453,3 +527,12 @@ U4. If Gate 7 is cut short, these still land:
 - `results/gate7_probes.txt` — the answers to U1–U4 are facts about this machine and this PMU
   that are worth having recorded whether or not anything is built on them.
 - Any `TAKEAWAYS.md` entry produced along the way.
+
+**This section describes a contingency that did not occur.** U4 passed decisively (Phase 0), and
+all seven phases ran to completion — Phase 7 correctly determined unnecessary by Phase 6's own
+measurement, which is the plan's stated non-failure outcome, not an abandonment. Results:
+`results/gate7_probes.txt`, `gate7_queue_baseline.txt`, `gate7_phase2_sampler.txt`,
+`gate7_phase3_attribution.txt`, `gate7_false_sharing.txt`, `gate7_latency.txt`, `gate7_drain.txt`.
+Six `docs/TAKEAWAYS.md` entries and two new README sections came out of it — more than the
+contingency list above anticipated, because more was found along the way than the plan could
+have predicted before running it.

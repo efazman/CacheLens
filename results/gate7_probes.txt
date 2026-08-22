@@ -1,0 +1,192 @@
+=== Gate 7 Phase 0 probes ===
+generated: 2026-08-22T07:29:18Z
+
+--- environment ---
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+kernel: 7.0.0-29-generic
+gcc: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+perf_event_paranoid: 1
+perf_event_mlock_kb: 516
+perf_event_max_sample_rate: 100000
+ulimit -l: 8192
+governor: powersave
+topology (cpu:core_id):
+  cpu0: 0
+  cpu10: 4
+  cpu11: 5
+  cpu1: 1
+  cpu2: 2
+  cpu3: 3
+  cpu4: 4
+  cpu5: 5
+  cpu6: 0
+  cpu7: 1
+  cpu8: 2
+  cpu9: 3
+
+=== P1: per-CPU task event open (U1) ===
+p1_percpu_open: kernel.perf_event_paranoid=1, online CPUs=12
+  cpu 0: perf_event_open OK, mmap OK
+  cpu 1: perf_event_open OK, mmap OK
+  cpu 2: perf_event_open OK, mmap OK
+  cpu 3: perf_event_open OK, mmap OK
+  cpu 4: perf_event_open OK, mmap OK
+  cpu 5: perf_event_open OK, mmap OK
+  cpu 6: perf_event_open OK, mmap OK
+  cpu 7: perf_event_open OK, mmap OK
+  cpu 8: perf_event_open OK, mmap OK
+  cpu 9: perf_event_open OK, mmap OK
+  cpu 10: perf_event_open OK, mmap OK
+  cpu 11: perf_event_open OK, mmap OK
+p1_percpu_open: PASS (all CPUs opened+mmapped)
+
+=== P2: enable_on_exec on cpu>=0 (U2) ===
+victim done, idx=0
+victim done, idx=0
+p2_enable_on_exec: online CPUs=12
+case A (cpu=0, exec): value=10822 time_enabled=110703975 time_running=110703975 (0.1107s)
+  -> counters armed and non-zero across the execve boundary
+case B (cpu=0, never exec): value=0 time_enabled=0 time_running=0
+  -> PASS: no early arming, counters read zero as expected
+case C (cpu=11, exec): value=11247 time_enabled=110190703 time_running=110190703 (0.1102s)
+  -> counters armed and non-zero across the execve boundary
+
+=== P3: mlock budget (U3) ===
+p3_mlock_budget: nproc=12, target rings=24 (2 events x per-CPU)
+p3_mlock_budget: perf_event_mlock_kb=516, RLIMIT_MEMLOCK=8388608 bytes (8.00 MiB)
+p3_mlock_budget: predicted allowance = perf_event_mlock_kb * nproc = 6.05 MiB
+ring size 1 MiB    (256 data pages): 13/24 rings succeeded (13.05 MiB) before mmap failed: errno=1 (Operation not permitted)
+ring size 512 KiB  (128 data pages): ALL 24 rings opened+mmapped (12.09 MiB total)
+ring size 256 KiB  (64 data pages): ALL 24 rings opened+mmapped (6.09 MiB total)
+ring size 128 KiB  (32 data pages): ALL 24 rings opened+mmapped (3.09 MiB total)
+ring size 64 KiB   (16 data pages): ALL 24 rings opened+mmapped (1.59 MiB total)
+
+=== P4: false sharing visibility to generalized cache events (U4) ===
+-- objdump: shared build, worker_a increment loop --
+00000000004014d0 <worker_a(Counters*)>:
+  4014d0:	f3 0f 1e fa          	endbr64
+  4014d4:	53                   	push   %rbx
+  4014d5:	48 89 fb             	mov    %rdi,%rbx
+  4014d8:	31 ff                	xor    %edi,%edi
+  4014da:	e8 71 ff ff ff       	call   401450 <pin_to(int)>
+  4014df:	b8 00 c2 eb 0b       	mov    $0xbebc200,%eax
+  4014e4:	90                   	nop
+  4014e5:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+  4014ec:	00 00 00 00 
+  4014f0:	f0 48 83 03 01       	lock addq $0x1,(%rbx)
+  4014f5:	f0 48 83 03 01       	lock addq $0x1,(%rbx)
+  4014fa:	48 83 e8 02          	sub    $0x2,%rax
+  4014fe:	75 f0                	jne    4014f0 <worker_a(Counters*)+0x20>
+  401500:	5b                   	pop    %rbx
+  401501:	c3                   	ret
+  401502:	0f 1f 00             	nopl   (%rax)
+  401505:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+  40150c:	00 00 00 00 
+
+0000000000401510 <worker_b(Counters*)>:
+  401510:	f3 0f 1e fa          	endbr64
+  401514:	53                   	push   %rbx
+  401515:	48 89 fb             	mov    %rdi,%rbx
+  401518:	bf 01 00 00 00       	mov    $0x1,%edi
+  40151d:	e8 2e ff ff ff       	call   401450 <pin_to(int)>
+  401522:	b8 00 c2 eb 0b       	mov    $0xbebc200,%eax
+  401527:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+  40152e:	00 00 
+  401530:	f0 48 83 43 08 01    	lock addq $0x1,0x8(%rbx)
+  401536:	f0 48 83 43 08 01    	lock addq $0x1,0x8(%rbx)
+  40153c:	48 83 e8 02          	sub    $0x2,%rax
+  401540:	75 ee                	jne    401530 <worker_b(Counters*)+0x20>
+  401542:	5b                   	pop    %rbx
+  401543:	c3                   	ret
+  401544:	66 2e 0f 1f 84 00 00 	cs nopw 0x0(%rax,%rax,1)
+  40154b:	00 00 00 
+  40154e:	66 90                	xchg   %ax,%ax
+
+
+-- objdump: padded build, worker_a increment loop --
+0000000000401510 <worker_a(Counters*)>:
+  401510:	f3 0f 1e fa          	endbr64
+  401514:	53                   	push   %rbx
+  401515:	48 89 fb             	mov    %rdi,%rbx
+  401518:	31 ff                	xor    %edi,%edi
+  40151a:	e8 71 ff ff ff       	call   401490 <pin_to(int)>
+  40151f:	b8 00 c2 eb 0b       	mov    $0xbebc200,%eax
+  401524:	90                   	nop
+  401525:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+  40152c:	00 00 00 00 
+  401530:	f0 48 83 03 01       	lock addq $0x1,(%rbx)
+  401535:	f0 48 83 03 01       	lock addq $0x1,(%rbx)
+  40153a:	48 83 e8 02          	sub    $0x2,%rax
+  40153e:	75 f0                	jne    401530 <worker_a(Counters*)+0x20>
+  401540:	5b                   	pop    %rbx
+  401541:	c3                   	ret
+  401542:	0f 1f 00             	nopl   (%rax)
+  401545:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+  40154c:	00 00 00 00 
+
+0000000000401550 <worker_b(Counters*)>:
+  401550:	f3 0f 1e fa          	endbr64
+  401554:	53                   	push   %rbx
+  401555:	48 89 fb             	mov    %rdi,%rbx
+  401558:	bf 01 00 00 00       	mov    $0x1,%edi
+  40155d:	e8 2e ff ff ff       	call   401490 <pin_to(int)>
+  401562:	b8 00 c2 eb 0b       	mov    $0xbebc200,%eax
+  401567:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+  40156e:	00 00 
+  401570:	f0 48 83 43 40 01    	lock addq $0x1,0x40(%rbx)
+  401576:	f0 48 83 43 40 01    	lock addq $0x1,0x40(%rbx)
+  40157c:	48 83 e8 02          	sub    $0x2,%rax
+  401580:	75 ee                	jne    401570 <worker_b(Counters*)+0x20>
+  401582:	5b                   	pop    %rbx
+  401583:	c3                   	ret
+  401584:	66 2e 0f 1f 84 00 00 	cs nopw 0x0(%rax,%rax,1)
+  40158b:	00 00 00 
+  40158e:	66 90                	xchg   %ax,%ax
+
+
+-- static_assert layout check: both builds compiled clean (see above) --
+
+-- perf stat: p4_shared (counters share one cache line) --
+p4_false_sharing: build=shared, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 1.810277s  checksum=400000000
+p4_false_sharing: build=shared, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 1.909860s  checksum=400000000
+p4_false_sharing: build=shared, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 1.809816s  checksum=400000000
+p4_false_sharing: build=shared, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 2.611956s  checksum=400000000
+p4_false_sharing: build=shared, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 1.812263s  checksum=400000000
+
+ Performance counter stats for '/tmp/gate7_probes_build/p4_shared' (5 runs):
+
+       108,102,665      cache-misses                                                            ( +-  9.26% )
+       110,399,471      cache-references                                                        ( +-  9.20% )
+       844,884,039      instructions                                                            ( +-  0.34% )
+    20,794,032,183      cycles                                                                  ( +-  7.65% )
+
+       1.993986664 +- 0.155955582 seconds time elapsed  ( +-  7.82% )
+
+
+-- perf stat: p4_padded (counters on separate cache lines) --
+p4_false_sharing: build=padded, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 0.270174s  checksum=400000000
+p4_false_sharing: build=padded, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 0.271102s  checksum=400000000
+p4_false_sharing: build=padded, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 0.270527s  checksum=400000000
+p4_false_sharing: build=padded, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 0.271285s  checksum=400000000
+p4_false_sharing: build=padded, pinned to CPU 0 (physical core 0) and CPU 1 (physical core 1), kIters=200000000 each
+elapsed: 0.267643s  checksum=400000000
+
+ Performance counter stats for '/tmp/gate7_probes_build/p4_padded' (5 runs):
+
+            78,446      cache-misses                                                            ( +-  5.11% )
+           573,662      cache-references                                                        ( +-  2.94% )
+       809,237,964      instructions                                                            ( +-  0.01% )
+     2,926,466,909      cycles                                                                  ( +-  0.48% )
+
+       0.271338563 +- 0.000672921 seconds time elapsed  ( +-  0.25% )
+

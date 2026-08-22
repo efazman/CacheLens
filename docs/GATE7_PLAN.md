@@ -1,12 +1,13 @@
 # CacheLens — Gate 7 Plan: Concurrent Targets and a Contended-Queue Case Study
 
-**Status:** plan only, nothing implemented — 2026-08-22
+**Status:** implemented, Phases 0-6 complete, Phase 7 correctly not triggered — 2026-08-22
 **Builds on:** Gate 6 (README rewrite). Assumes the Gate 5 concentration pipeline as shipped.
-**Relationship to `ARCHITECTURE.md`:** that document describes the system as built for a
-single-threaded target. §1 below identifies a kernel constraint that makes the multithreaded
-case a different design, not a parameterization of the existing one. Where this plan and
-`ARCHITECTURE.md` disagree about the sampler, this plan is the newer analysis — but nothing
-here is implemented, so `ARCHITECTURE.md` still describes the actual code.
+**Relationship to `ARCHITECTURE.md`:** that document described the system as built for a
+single-threaded target; `src/main.cpp` now implements the multithreaded per-CPU design this
+plan describes (see §1, Decisions (Phase 0), and `docs/GATE7_IMPLEMENTATION.md`).
+`ARCHITECTURE.md`'s attr table has been spot-corrected for the `inherit` field but was not
+otherwise rewritten for Gate 7 — this plan and its Adjudication section are the authoritative
+account of what the sampler actually does and what it found.
 
 ---
 
@@ -271,6 +272,139 @@ with the target for the L3 it is trying to measure. This project already documen
 background load biases results *upward*; a profiler that is itself background load is the same
 problem from the inside. Profiling overhead as a percentage of target runtime is currently
 unmeasured for *any* configuration, including the one that shipped.
+
+---
+
+## Decisions (Phase 0)
+
+Recorded 2026-08-22, immediately after `results/gate7_probes.txt` was produced, before any
+Phase 1 benchmark exists. Full unedited probe output: [`results/gate7_probes.txt`](../results/gate7_probes.txt).
+
+**U1 (blocking) — per-CPU task event open at `paranoid=1`: PASS.** All 12 online CPUs opened
+and mmapped a `pid=self, cpu=i` event without error. The `find_get_context`/`task != NULL`
+reading of the man page held; the system-wide-focused paranoid language did not apply here.
+
+**U2 (blocking) — `enable_on_exec` on `cpu>=0`: PASS.** Case A (cpu 0) and case C (cpu 11, the
+last online CPU) both showed non-zero counts and `time_running` tracking only the post-exec
+runtime. Case B (killed before exec) read exactly zero. One correction made mid-probe: the first
+run of case C read `value=0, time_running=0` with `time_enabled` non-zero — not a failure of
+`enable_on_exec`, but a probe bug: an unpinned child was never scheduled onto CPU 11 during its
+~110ms lifetime, and a `cpu>=0` task event only counts while the task runs on that exact CPU.
+Fixed by pinning the child via `sched_setaffinity` to the target CPU before `SIGSTOP`, matching
+what the real per-CPU sampler will need to reason about regardless (a per-CPU event's counts
+are meaningless unless something guarantees the task actually ran on that CPU). Re-run passed.
+
+**U3 (blocking) — mlock budget: prediction corrected.** The naive formula
+(`perf_event_mlock_kb x nproc` = 516 KiB x 12 = 6.05 MiB) undershot reality by roughly 2x. Actual
+measured ceiling for 24 rings (2 events x 12 CPUs, U5 Option A's shape): all 24 succeed at
+512 KiB/ring (12.09 MiB total); at 1 MiB/ring only 13/24 succeed before `mmap` returns `EPERM`
+(13.05 MiB). The true allowance sits somewhere in (12.09, ~14) MiB — closer to
+`perf_event_mlock_kb x nproc` **plus** `RLIMIT_MEMLOCK` (8 MiB) than to either alone, which is
+consistent with the kernel charging the free per-user quota first and the rest against
+`RLIMIT_MEMLOCK`, but this was not independently re-derived past what the probe needed to answer
+U7. Decided: **512 KiB is the ring size** (see U7 below), not 1 MiB — the plan's illustrative
+1 MiB number does not fit the real budget on this machine.
+
+**U4 (blocking, gating) — false sharing visibility: PASS, decisively.** Outcome landed in row one
+of the three possible outcomes: large wall-clock gap **and** large `cache-misses` gap.
+
+| build | elapsed (5-run mean) | cache-misses | cache-references |
+|---|---|---|---|
+| shared (false-sharing) | 1.994s +- 7.82% | 108,102,665 | 110,399,471 |
+| padded (separate lines) | 0.271s +- 0.25% | 78,446 | 573,662 |
+
+A 7.3x wall-clock gap and a ~1,380x `cache-misses` gap. `objdump -C` on both builds confirms the
+cause before any of this is trusted: in the shared build, `worker_a`'s `lock addq` targets offset
+`0x0` of the struct and `worker_b`'s targets offset `0x8` — 8 bytes apart, inside one 64-byte
+line; in the padded build the same two instructions target `0x0` and `0x40` — exactly one cache
+line apart, matching the `alignas(64)` fields. **The third outcome (no wall-clock gap) is
+excluded.** The generalized `cache-misses` / `cache-references` events on this Zen 4 part do see
+coherence/HITM-style traffic from two-thread false sharing; the false-sharing headline for Gate 7
+is available and U14's fallback is not needed.
+
+**U5 — sampler shape: Option A (per-CPU + inherit).** U1 and U2 both passed, so Option A's
+dependencies are satisfied and its generality (works on any target, matches `perf record`, no
+target cooperation required) is worth its cost. Option B is not needed.
+
+**U6 — sample-rate target: aggregate, not per-CPU.** Decided on sampling-statistics grounds, not
+on what it does to Phase 6's deadline (which the plan explicitly rules out as an input; the
+extra headroom this creates is a side effect, not the reason). Calibration already measures the
+*aggregate* event rate across all target threads (`calibrate_both`, `inherit=1` counting mode).
+The period assigned to each per-CPU ring should reproduce that same aggregate target rate summed
+across CPUs — i.e. `period_per_cpu` is derived from `aggregate_rate / nr_cpus_used_by_target`
+against the 60%-of-max target — because that is what preserves the existing calibration
+methodology's meaning ("sample at 60% of the kernel's cap relative to the target's actual event
+rate"). Independently maxing every CPU's own per-context rate regardless of that CPU's actual
+share of the load has no statistical justification: it would 12x the interrupt volume without
+increasing the information content of the sample, since most of those samples would come from
+CPUs the target barely touches. See U8 for the exact divisor.
+
+**U7 — ring size: 512 KiB per ring**, per U3's measured (not predicted) ceiling. On this machine
+`perf_event_max_sample_rate=100000/sec` (not the 79,000-100,000 range seen in earlier gates' runs
+at different governor/frequency states — this value is read fresh per run, as the existing code
+already does). At 60%: aggregate target = 60,000/sec; under U6's aggregate scheme, per-ring
+target = 60,000 / 12 = 5,000/sec. A 512 KiB ring holds 524,288 / 32 = 16,384 records (32 bytes/
+record under `IP | TID | PERIOD`). **Headroom = 16,384 / 5,000 ~= 3.28s** per ring before
+overwrite — ample slack, on the same order as the plan's illustrative aggregate-config estimate,
+confirming Phase 6/7 are very unlikely to find a real deadline miss under this configuration.
+
+**U15 — optimization level: two binaries.** `-O1 -g -no-pie` for attribution (Phase 1/3/4),
+`-O2 -g -no-pie` for the latency harness (Phase 5). Never merged into one table, matching the
+discipline the README already applies to `perf stat` vs CacheLens's own aggregate.
+
+**U16 — thread pinning: distinct physical cores, CPU 0 and CPU 1.** Confirmed via
+`/sys/devices/system/cpu/cpu*/topology/core_id`: CPU 0 and CPU 1 are core_id 0 and 1 respectively
+(distinct physical cores); CPU 0 and CPU 6 would be SMT siblings of the same core (both
+core_id 0) and were deliberately avoided. P4 used this pinning and produced the clean result
+above, which is itself evidence the choice was right for eliciting the effect.
+
+**U10 — inlining mitigation: `__attribute__((noinline))`** on the queue's `push`/`pop`, disclosed
+in the benchmark source as a benchmark-shaping decision (forces attribution to land inside the
+operation instead of at the call site), not a performance claim. Inline-frame expansion remains
+out of scope for this gate.
+
+---
+
+## Adjudication (Phase 4)
+
+Recorded 2026-08-22, against `results/gate7_false_sharing.txt`'s full pooled data (n=5 runs per
+build). Adjudicated item by item, per the discipline stated in §0: any failure is reported as a
+failure, not quietly dropped or reframed as success.
+
+**(a) "concentration ranking places the index-update line at #1": FAILS as literally stated.**
+Neither `store_tail`'s nor `store_head`'s own store instruction ranks #1 by pooled Wilson
+concentration; the top slot goes to a spin-wait check line instead (`pop()`'s `while` condition).
+But the single largest *relative* response to padding of any line in the function — **+673.5%**
+between the padded and unpadded builds — lands on the one instruction immediately after
+`store_head`'s real store, on a large, reliable sample (21,440 pooled access samples), and that
+line also ranks in the top 3 by absolute concentration. This is one instruction of skid, not
+absence of an effect: Gate 4 measured 99.99% skid containment within ±2 source lines on a
+7-instruction, 2-line hot loop that left skid almost nowhere else to land. This queue's
+`push()`/`pop()` span ten-plus lines each; skid had room to move, and the data shows it moved by
+exactly one instruction on the cleanest available signal.
+
+**(b) "raw miss-count ranking does not place the index-update line at #1": true but not
+meaningfully confirmatory.** Raw count's #1 is a *third* line (the busiest spin-check by call
+frequency, 91,732 pooled raw misses) — distinct from both the literal index-update lines and
+from concentration's own #1. Concentration and raw count do disagree with each other, reproducing
+this project's core methodological point on a second, structurally different workload — but
+neither ranking isolates the specific instruction this experiment targeted as cleanly as Gate 5's
+matrix result did the first time.
+
+**(c) "the padded build shows neither the wall-clock cost nor the concentration signal":
+CONFIRMED for wall-clock** (2.75x–3.62x faster, every measurement). **Partially confirmed for
+concentration:** 14 of 16 reliably-sampled lines show a real, positive increase under contention
+(median +58%) — consistent with false sharing creating broad memory-system pressure, not a
+perfectly localized signal — but the single cleanest, largest differential (the +673.5% line
+above) sits exactly where the mechanism predicts: one instruction from the literal write. Two
+lines showed a flat or negative relative change; both have small pooled sample counts (217–9,628
+access) and are read as noise the support gate exists to guard against, not as counter-evidence.
+
+**What this changes about how the result can be claimed:** the mechanism prediction (a real,
+hardware-visible, padding-sensitive effect that concentration and raw count see differently)
+held. The precision prediction (concentration's #1 lands exactly on the write instruction) did
+not, for a reason this project's own prior skid work anticipated could happen on a less
+compressed hot-loop body. Both are reported, not just the one that succeeded.
 
 ---
 

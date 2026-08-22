@@ -1,0 +1,40 @@
+=== Gate 7 Phase 2: per-CPU sampler regression guard ===
+generated: 2026-08-22T08:07:20Z
+
+--- environment ---
+cpu model: AMD Ryzen 5 7600X 6-Core Processor
+nproc: 12
+kernel: 7.0.0-29-generic
+governor: powersave
+perf_event_paranoid: 1
+
+=== matrix_bad through new per-CPU sampler (3 runs) ===
+-- run 1 --
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=295692 access=59144  concentration=0.437457  wilson_lb=0.437431
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=407541 access=638817  concentration=0.055821  wilson_lb=0.055718
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=407541
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=295692
+-- run 2 --
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=291714 access=59256  concentration=0.429786  wilson_lb=0.429761
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:41  miss=81 access=92  concentration=0.076864  wilson_lb=0.069708
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=414998
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=291714
+-- run 3 --
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=290464 access=60928  concentration=0.414899  wilson_lb=0.414876
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=404392 access=632984  concentration=0.055600  wilson_lb=0.055497
+  #1  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:43  miss=404392
+  #2  /home/efaz-rahman/CacheLens/benchmarks/matrix_bad.cpp:44  miss=290464
+
+=== spsc_queue_shared: multithreaded attribution validation ===
+record histogram (summed): sample=42763 lost_records=0 lost_events=0 exit=0 other=0
+  cpu 0: value=31784717 samples=21875 lost_records=0 lost_events=0 mux_fraction=0.9974
+  cpu 1: value=30338148 samples=20879 lost_records=0 lost_events=0 mux_fraction=0.9974
+  cpu 2: value=423 samples=0 lost_records=0 lost_events=0 mux_fraction=0.0146
+  cpu 5: value=14483 samples=9 lost_records=0 lost_events=0 mux_fraction=1.0000
+  cpu 6: value=768 samples=0 lost_records=0 lost_events=0 mux_fraction=0.0149
+record histogram (summed): sample=58535 lost_records=0 lost_events=0 exit=0 other=0
+  cpu 0: value=61671412 samples=28858 lost_records=0 lost_events=0 mux_fraction=0.9974
+  cpu 1: value=63356228 samples=29647 lost_records=0 lost_events=0 mux_fraction=0.9974
+  cpu 2: value=648 samples=0 lost_records=0 lost_events=0 mux_fraction=0.0146
+  cpu 5: value=65486 samples=30 lost_records=0 lost_events=0 mux_fraction=1.0000
+  cpu 6: value=1145 samples=0 lost_records=0 lost_events=0 mux_fraction=0.0149

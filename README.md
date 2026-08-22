@@ -154,6 +154,93 @@ stalls, not more throughput.
 than the cache-friendly one, so an unquiesced reproduction will tend to report a *better* number
 than the true one.
 
+## Second case study: false sharing on a multithreaded queue (Gate 7)
+
+A pre-registered prediction (recorded before any measurement existed —
+[`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) §0) about a bounded SPSC queue whose producer-owned
+and consumer-owned index sit either on one cache line or on two, profiled with a producer and
+consumer thread pinned to separate physical cores. Adjudicated item by item, honestly, including
+where it didn't land exactly as predicted — full data and reasoning:
+[`results/gate7_false_sharing.txt`](results/gate7_false_sharing.txt).
+
+**The wall-clock effect is unambiguous:** the padded build (index fields on separate cache
+lines) runs 2.75x–3.62x faster than the unpadded build, reproduced across every measurement
+taken. `objdump` confirms the fields sit 8 bytes apart in the unpadded build and exactly 64
+bytes apart in the padded one.
+
+**The concentration ranking did not land on the literal predicted line — and the reason why is
+itself informative.** Neither index-update instruction (the actual `store` to the producer's or
+consumer's index) ranks #1 by concentration; the top slot goes to a spin-wait check line instead.
+But the single largest *relative* response to padding, of any line in the function — a **+673%**
+jump between the padded and unpadded builds — lands on the one x86 instruction immediately
+*after* the consumer's index-update store, and that line also ranks in the top 3 by absolute
+concentration on a large, reliable sample (21,440 pooled access samples, not a low-count fluke).
+That is one instruction of skid, not a miss: this project previously measured skid at 99.99%
+within ±2 source lines on a 7-instruction, 2-line hot loop (Gate 4) — a body with almost nowhere
+else for skid to land. This queue's `push()`/`pop()` span ten-plus lines each, giving skid real
+room to move, and it visibly used it.
+
+**Raw miss-count ranking's #1 is a third, different line again** (the busiest spin-check by call
+frequency) — reproducing, on a structurally different workload, the same "raw count finds the
+busy line, not the interesting one" divergence the first case study demonstrated. Concentration
+and raw count disagree with each other here exactly as they did for `matrix_bad`; neither one
+happens to isolate the specific instruction this experiment targeted as cleanly as Gate 5's
+result did.
+
+**Reading it straight:** the pre-registered prediction about *which exact line* wins the ranking
+did not hold. The prediction about the mechanism — that this is a real, hardware-visible,
+padding-sensitive effect, and that concentration and raw count see it differently — did. A
+failed prediction reported with the data that explains why is worth more than a success that
+wasn't checked this closely.
+
+## Tail latency, and a governor result that does *not* transfer
+
+[`results/gate7_latency.txt`](results/gate7_latency.txt): an open-loop, rate-controlled harness
+(500,000 ops/sec, well below the queue's unsaturated capacity) measuring padded-vs-shared queue
+latency, and separately, CPU governor sensitivity — re-asked rather than assumed, because Gate
+5's governor null result was measured on a memory-stalled workload and a latency-sensitive one
+is a different question.
+
+**The false-sharing penalty shows up in typical latency, not in the tail, at this load level.**
+p50 and p99 are consistently 10-20% higher on the shared build, every run (n=5 each); p99.9 and
+above overlap completely between builds — at a rate this far from saturation, tail latency is
+dominated by ordinary OS scheduling noise, which is larger than the cache-line-placement effect
+and swamps it.
+
+**The governor result does not transfer, confirming it shouldn't have been assumed to.** Typical
+latency (p50/p99) is governor-insensitive, matching Gate 5's direction. The tail is not:
+`performance` gives a lower typical p99.9 but wildly inconsistent run-to-run behavior and
+occasional extreme outliers (up to 1.85ms — a ~25,000x multiple of p50, visible only because the
+open-loop design doesn't hide stalls the way a closed-loop harness would); `powersave` gives a
+higher but remarkably stable p99.9 (under 3% spread across 5 runs). The cause is not confirmed —
+stated as a hypothesis (turbo/thermal transition stalls under sustained max-frequency load), not
+a finding.
+
+## Does CacheLens keep up with its own targets? (Gate 7 Phase 6)
+
+Nothing new is built for this section — it only measures. Full data:
+[`results/gate7_drain.txt`](results/gate7_drain.txt).
+
+**The drain keeps up, comfortably.** Against a genuinely contended two-thread workload, the
+worst single poll-loop drain iteration observed was 495us — three-plus orders of magnitude under
+the ~3.3s headroom the aggregate sample-rate configuration (Phase 0, U6/U7) provides per ring.
+Zero `lost_records`/`lost_events` on that workload, every run.
+
+**Profiling cost — measured, and not in the expected direction.** Comparing the target's own
+self-reported wall-clock time, standalone vs. under CacheLens, across 5 interleaved paired
+trials: the target ran *faster* under CacheLens in all five, by about 17%, not slower. This
+project's own prior finding is that background load biases results *upward* (see the first case
+study) — this result is neither that nor the naive "profiling adds overhead" expectation. A
+plausible mechanism (PMU sampling interrupts, tens of thousands per second, interacting with the
+`powersave` governor's frequency selection) was proposed but not confirmed — an attempt to
+verify it via live CPU-frequency sampling failed on timing precision against a sub-second
+benchmark, and is reported as an open question rather than forced into an answer.
+
+**Because the drain keeps up and profiling shows no measured cost, Phase 7 (a concurrent queue
+inside CacheLens's own drain path) does not happen** — the expected outcome under the aggregate
+sample-rate configuration, and, like the governor null result, worth recording precisely because
+it was tested rather than assumed.
+
 ## Limitations and caveats
 
 - **Benchmarks are built `-O1`, not `-O2`.** At `-O2`, GCC auto-vectorizes `matrix_bad`'s inner
@@ -182,10 +269,23 @@ than the true one.
 - **Single machine, single configuration, single moment in time.** AMD Ryzen 5 7600X (Zen 4),
   32 MiB L3, 16 GB DDR5 single-channel, Ubuntu, kernel `7.0.0-29-generic`. Not reproduced
   elsewhere.
-- **No cross-architecture abstraction (PEBS/IBS/SPE), no system-wide or multi-process
-  profiling, no inline-frame expansion** (a sample inside an inlined function attributes to the
-  inline call site — both benchmarks are fully inlined into `main` at `-O1`), **no automatic
-  code rewriting, no GUI.**
+- **Multithreaded targets: supported since Gate 7, at a real cost.** Earlier increments left
+  `attr.inherit` at 0 and silently profiled only the target's initial thread — undocumented at
+  the time. Sampling every thread of a multithreaded target requires one `perf_event_open` per
+  (event, online CPU) with `inherit=1` (`pid=-1` and `inherit=1` together disable the mmap ring
+  buffer entirely — see `docs/GATE7_PLAN.md` §1), which is 24 file descriptors and 24 ring
+  buffers on this 12-CPU machine, up from 2. See
+  [`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) and
+  [`docs/GATE7_IMPLEMENTATION.md`](docs/GATE7_IMPLEMENTATION.md) for the design and the unknowns
+  closed along the way — including a real bug the regression guard caught: a per-CPU task
+  event's `time_running`/`time_enabled` ratio looks exactly like PMU contention on any CPU an
+  unpinned thread merely migrated through, and has to be summed across all per-CPU rings for an
+  event before that ratio means anything.
+- **No system-wide (`pid=-1`) or multi-process profiling.** Per-CPU events are opened for one
+  target task tree, not the whole machine — a deliberate scope boundary, not a gap.
+- **No cross-architecture abstraction (PEBS/IBS/SPE), no inline-frame expansion** (a sample
+  inside an inlined function attributes to the inline call site — both matrix benchmarks are
+  fully inlined into `main` at `-O1`), **no automatic code rewriting, no GUI.**
 
 ## Reproducing
 
