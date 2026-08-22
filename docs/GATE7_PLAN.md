@@ -1,12 +1,13 @@
 # CacheLens — Gate 7 Plan: Concurrent Targets and a Contended-Queue Case Study
 
-**Status:** plan only, nothing implemented — 2026-08-22
+**Status:** implemented, Phases 0-6 complete, Phase 7 correctly not triggered — 2026-08-22
 **Builds on:** Gate 6 (README rewrite). Assumes the Gate 5 concentration pipeline as shipped.
-**Relationship to `ARCHITECTURE.md`:** that document describes the system as built for a
-single-threaded target. §1 below identifies a kernel constraint that makes the multithreaded
-case a different design, not a parameterization of the existing one. Where this plan and
-`ARCHITECTURE.md` disagree about the sampler, this plan is the newer analysis — but nothing
-here is implemented, so `ARCHITECTURE.md` still describes the actual code.
+**Relationship to `ARCHITECTURE.md`:** that document described the system as built for a
+single-threaded target; `src/main.cpp` now implements the multithreaded per-CPU design this
+plan describes (see §1, Decisions (Phase 0), and `docs/GATE7_IMPLEMENTATION.md`).
+`ARCHITECTURE.md`'s attr table has been spot-corrected for the `inherit` field but was not
+otherwise rewritten for Gate 7 — this plan and its Adjudication section are the authoritative
+account of what the sampler actually does and what it found.
 
 ---
 

@@ -1,6 +1,6 @@
 # CacheLens — Gate 7 Implementation Plan
 
-**Status:** not started — 2026-08-22
+**Status:** Phases 0-6 complete, Phase 7 correctly not triggered — 2026-08-22
 **Companion document:** [`GATE7_PLAN.md`](GATE7_PLAN.md) — the scope, the pre-registered
 prediction, and the unknowns register (U1–U27). That document says *why* and *what is unknown*.
 This one says *how*, in the order it gets done.
@@ -527,3 +527,12 @@ U4. If Gate 7 is cut short, these still land:
 - `results/gate7_probes.txt` — the answers to U1–U4 are facts about this machine and this PMU
   that are worth having recorded whether or not anything is built on them.
 - Any `TAKEAWAYS.md` entry produced along the way.
+
+**This section describes a contingency that did not occur.** U4 passed decisively (Phase 0), and
+all seven phases ran to completion — Phase 7 correctly determined unnecessary by Phase 6's own
+measurement, which is the plan's stated non-failure outcome, not an abandonment. Results:
+`results/gate7_probes.txt`, `gate7_queue_baseline.txt`, `gate7_phase2_sampler.txt`,
+`gate7_phase3_attribution.txt`, `gate7_false_sharing.txt`, `gate7_latency.txt`, `gate7_drain.txt`.
+Six `docs/TAKEAWAYS.md` entries and two new README sections came out of it — more than the
+contingency list above anticipated, because more was found along the way than the plan could
+have predicted before running it.
