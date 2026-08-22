@@ -154,6 +154,45 @@ stalls, not more throughput.
 than the cache-friendly one, so an unquiesced reproduction will tend to report a *better* number
 than the true one.
 
+## Second case study: false sharing on a multithreaded queue (Gate 7)
+
+A pre-registered prediction (recorded before any measurement existed —
+[`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) §0) about a bounded SPSC queue whose producer-owned
+and consumer-owned index sit either on one cache line or on two, profiled with a producer and
+consumer thread pinned to separate physical cores. Adjudicated item by item, honestly, including
+where it didn't land exactly as predicted — full data and reasoning:
+[`results/gate7_false_sharing.txt`](results/gate7_false_sharing.txt).
+
+**The wall-clock effect is unambiguous:** the padded build (index fields on separate cache
+lines) runs 2.75x–3.62x faster than the unpadded build, reproduced across every measurement
+taken. `objdump` confirms the fields sit 8 bytes apart in the unpadded build and exactly 64
+bytes apart in the padded one.
+
+**The concentration ranking did not land on the literal predicted line — and the reason why is
+itself informative.** Neither index-update instruction (the actual `store` to the producer's or
+consumer's index) ranks #1 by concentration; the top slot goes to a spin-wait check line instead.
+But the single largest *relative* response to padding, of any line in the function — a **+673%**
+jump between the padded and unpadded builds — lands on the one x86 instruction immediately
+*after* the consumer's index-update store, and that line also ranks in the top 3 by absolute
+concentration on a large, reliable sample (21,440 pooled access samples, not a low-count fluke).
+That is one instruction of skid, not a miss: this project previously measured skid at 99.99%
+within ±2 source lines on a 7-instruction, 2-line hot loop (Gate 4) — a body with almost nowhere
+else for skid to land. This queue's `push()`/`pop()` span ten-plus lines each, giving skid real
+room to move, and it visibly used it.
+
+**Raw miss-count ranking's #1 is a third, different line again** (the busiest spin-check by call
+frequency) — reproducing, on a structurally different workload, the same "raw count finds the
+busy line, not the interesting one" divergence the first case study demonstrated. Concentration
+and raw count disagree with each other here exactly as they did for `matrix_bad`; neither one
+happens to isolate the specific instruction this experiment targeted as cleanly as Gate 5's
+result did.
+
+**Reading it straight:** the pre-registered prediction about *which exact line* wins the ranking
+did not hold. The prediction about the mechanism — that this is a real, hardware-visible,
+padding-sensitive effect, and that concentration and raw count see it differently — did. A
+failed prediction reported with the data that explains why is worth more than a success that
+wasn't checked this closely.
+
 ## Limitations and caveats
 
 - **Benchmarks are built `-O1`, not `-O2`.** At `-O2`, GCC auto-vectorizes `matrix_bad`'s inner

@@ -364,6 +364,49 @@ out of scope for this gate.
 
 ---
 
+## Adjudication (Phase 4)
+
+Recorded 2026-08-22, against `results/gate7_false_sharing.txt`'s full pooled data (n=5 runs per
+build). Adjudicated item by item, per the discipline stated in §0: any failure is reported as a
+failure, not quietly dropped or reframed as success.
+
+**(a) "concentration ranking places the index-update line at #1": FAILS as literally stated.**
+Neither `store_tail`'s nor `store_head`'s own store instruction ranks #1 by pooled Wilson
+concentration; the top slot goes to a spin-wait check line instead (`pop()`'s `while` condition).
+But the single largest *relative* response to padding of any line in the function — **+673.5%**
+between the padded and unpadded builds — lands on the one instruction immediately after
+`store_head`'s real store, on a large, reliable sample (21,440 pooled access samples), and that
+line also ranks in the top 3 by absolute concentration. This is one instruction of skid, not
+absence of an effect: Gate 4 measured 99.99% skid containment within ±2 source lines on a
+7-instruction, 2-line hot loop that left skid almost nowhere else to land. This queue's
+`push()`/`pop()` span ten-plus lines each; skid had room to move, and the data shows it moved by
+exactly one instruction on the cleanest available signal.
+
+**(b) "raw miss-count ranking does not place the index-update line at #1": true but not
+meaningfully confirmatory.** Raw count's #1 is a *third* line (the busiest spin-check by call
+frequency, 91,732 pooled raw misses) — distinct from both the literal index-update lines and
+from concentration's own #1. Concentration and raw count do disagree with each other, reproducing
+this project's core methodological point on a second, structurally different workload — but
+neither ranking isolates the specific instruction this experiment targeted as cleanly as Gate 5's
+matrix result did the first time.
+
+**(c) "the padded build shows neither the wall-clock cost nor the concentration signal":
+CONFIRMED for wall-clock** (2.75x–3.62x faster, every measurement). **Partially confirmed for
+concentration:** 14 of 16 reliably-sampled lines show a real, positive increase under contention
+(median +58%) — consistent with false sharing creating broad memory-system pressure, not a
+perfectly localized signal — but the single cleanest, largest differential (the +673.5% line
+above) sits exactly where the mechanism predicts: one instruction from the literal write. Two
+lines showed a flat or negative relative change; both have small pooled sample counts (217–9,628
+access) and are read as noise the support gate exists to guard against, not as counter-evidence.
+
+**What this changes about how the result can be claimed:** the mechanism prediction (a real,
+hardware-visible, padding-sensitive effect that concentration and raw count see differently)
+held. The precision prediction (concentration's #1 lands exactly on the write instruction) did
+not, for a reason this project's own prior skid work anticipated could happen on a less
+compressed hot-loop body. Both are reported, not just the one that succeeded.
+
+---
+
 ## 4. Implementation plan
 
 **The executable plan lives in [`GATE7_IMPLEMENTATION.md`](GATE7_IMPLEMENTATION.md)** — files

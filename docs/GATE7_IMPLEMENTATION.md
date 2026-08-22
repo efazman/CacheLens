@@ -400,9 +400,15 @@ an unregistered success.
 
 ### Exit criteria
 
-- [ ] Prediction adjudicated in writing, item by item.
-- [ ] Results file committed unedited, with environment block.
-- [ ] README updated to match whatever actually happened.
+- [x] Prediction adjudicated in writing, item by item — `docs/GATE7_PLAN.md`'s "Adjudication
+      (Phase 4)" section. (a) fails as literally stated but the failure is explained (one
+      instruction of skid, on the cleanest available signal); (b) true but not meaningfully
+      confirmatory; (c) confirmed for wall-clock, partially confirmed for concentration.
+- [x] Results file committed, with environment block — `results/gate7_false_sharing.txt`, n=5
+      pooled runs per build, full per-line table.
+- [x] README updated to match whatever actually happened — new "Second case study" section,
+      written to the same standard as the first headline, reporting the miss as clearly as the
+      hit.
 
 ---
 

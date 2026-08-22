@@ -7,6 +7,34 @@ back it up if asked to go deeper.
 
 ---
 
+## A failed pre-registered prediction, and the one-instruction skid that explains it
+
+**When:** Gate 7 Phase 4, adjudicating the false-sharing prediction against the SPSC queue,
+2026-08-22.
+
+**The prediction failure:** `docs/GATE7_PLAN.md` §0 pre-registered, before any measurement,
+that concentration ranking would place the queue's index-update store at #1. It didn't — in five
+pooled runs, the top slot went to a spin-wait check line instead, and both literal index-update
+instructions (`store_tail`, `store_head`) ranked in the lower half of the table.
+
+**What made it worth trusting instead of dismissing:** comparing the padded and unpadded builds
+line-by-line (not just looking at the unpadded build's top line in isolation) surfaced that the
+single largest *relative* change of any line in the entire function — a 673% jump between builds,
+on 21,440 pooled access samples, not a low-count fluke — landed on the one x86 instruction
+immediately *after* `store_head`'s actual store. That is one instruction of skid, and this
+project already had a baseline to compare against: Gate 4 measured 99.99% skid containment within
+±2 source lines, but on a 7-instruction, 2-line hot loop that left skid almost nowhere else to
+go. This queue's `push()`/`pop()` span ten-plus lines each. Skid had room to move this time, and
+the padded-vs-unpadded differential — not the raw ranking alone — is what showed where it went.
+
+**One-line takeaway:** a ranking that "gets the wrong line" is not automatically evidence the
+tool failed — compare the SAME line across a treatment/control pair before concluding that, the
+way this project's own methodology already insists on doing for wall-clock numbers. The line
+that moved the most between builds, not the line that ranked highest in one build alone, is what
+told the real story here.
+
+---
+
 ## Two different atomic stores can share one line in the debug info — `noinline` on the caller doesn't fix it
 
 **When:** Gate 7 Phase 3, characterizing skid for the queue workload before running the
