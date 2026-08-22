@@ -7,6 +7,38 @@ back it up if asked to go deeper.
 
 ---
 
+## A per-CPU counter's own multiplexing ratio looks exactly like contention when a thread just migrates
+
+**When:** Gate 7 Phase 2, first run of the rewritten per-CPU sampler against `matrix_bad` (a
+regression guard against Gate 5's headline), 2026-08-22.
+
+**The bug:** the single-ring sampler's existing halt check ("multiplexing fraction
+`time_running/time_enabled` must be >= 0.99, per event") was ported to the new per-CPU design as
+a per-(event, CPU) check. First run halted immediately: `miss@cpu0 multiplexing fraction 0.1877`.
+`matrix_bad` is single-threaded and unpinned, so the OS scheduler moves it across CPUs over its
+~12-second run — printing the raw numbers showed why that broke the check: `time_enabled` was
+identical (13,703,492,089 ns) on every one of the 9 CPUs the thread ever touched, because
+`time_enabled` tracks wall-clock since the event armed at `execve`, independent of which CPU is
+current. `time_running` varied wildly per CPU (5.47s on cpu0, 7.67s on cpu1, as little as 2.8ms on
+cpu3) because it only counts time actually scheduled on *that specific* CPU. A CPU the thread
+passed through for 2.8ms out of a 13.7s run reads back a 0.0002 "multiplexing fraction" that has
+nothing to do with PMU contention — it is a perfectly ordinary migration.
+
+**The fix:** sum `time_running` across every per-CPU ring for an event before comparing to
+`time_enabled` (using any one ring's value — they're identical). This reconstructs the thread's
+true total scheduled time regardless of which CPU it was on at any given instant. Verified against
+the actual numbers before trusting the fix: the nine per-CPU `time_running` values for the `miss`
+event summed to exactly 13,703,492,089 ns — bit-for-bit equal to `time_enabled` — confirming zero
+genuine contention, the same conclusion the single-ring design's check was built to reach, just
+computed correctly for a task that isn't pinned to one CPU.
+
+**One-line takeaway:** a per-resource ratio (this counter's own scheduled-time fraction) can be a
+correct signal in one topology (one shared resource, `cpu=-1`) and a completely different question
+in another (N per-CPU resources) — porting the check without re-deriving what "contention" even
+means in the new topology reads a scheduler's ordinary behavior as a fatal PMU failure.
+
+---
+
 ## `alignas(64)` pads a field's start, not its extent — and a naive false-sharing benchmark can hide its own bug
 
 **When:** Gate 7 Phase 1, building the SPSC queue benchmark for the false-sharing case study,

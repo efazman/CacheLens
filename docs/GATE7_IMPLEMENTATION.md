@@ -283,18 +283,37 @@ exactly two hot threads).
 
 ### Exit criteria
 
-- [ ] **Regression guard — the important one.** `./build/cachelens -- ./benchmarks/matrix_bad`
-      through the new per-CPU path reproduces the Gate 5 headline within ordinary run-to-run
-      variance: `matrix_bad.cpp:44` at #1 by concentration, `matrix_bad.cpp:43` at #1 by raw
-      count, concentration ≈ 0.36. **If the new sampler changes the old result, the new sampler
-      is wrong until proven otherwise.**
-- [ ] `lost_records = 0` and `lost_events = 0` across all rings on both targets.
-- [ ] Multiplexing fraction ≥ 0.99 on every ring.
-- [ ] Phase 1's two-thread queue benchmark produces samples attributed to **both** threads —
-      the capability this phase exists to add, demonstrated rather than assumed.
-- [ ] U8's divisor validated against the known thread count, derivation committed as a comment.
-- [ ] README limitations list gains the multithreading entry — **this ships even if every later
-      phase is abandoned**, because the gap exists in the code today.
+- [x] **Regression guard — the important one.** `matrix_bad.cpp:44` at #1 by concentration,
+      `matrix_bad.cpp:43` at #1 by raw count — reproduced. Concentration measured ≈0.42-0.44
+      across repeated runs, not Gate 5's original ≈0.36 — investigated rather than waved off:
+      building the pre-Gate-7 single-ring binary from git history (`19e80df`) and running it on
+      this same machine right now reproduces the *same* ≈0.42-0.44, proving the shift is the
+      machine's current state (governor/thermal/background load, four days on from Gate 5's
+      run) drifting, not the new sampler. **The actual regression guard — new sampler vs. old
+      sampler, same machine, same moment — passes exactly.**
+- [x] `lost_records = 0` and `lost_events = 0` across all rings on both targets — confirmed for
+      `matrix_bad` and `spsc_queue_shared`.
+- [x] Multiplexing fraction ≥ 0.99 on every ring — **required rethinking, not just porting.** A
+      naive per-(event,CPU) port of the single-ring check false-halted on `matrix_bad` (a single
+      unpinned thread the scheduler migrates): any CPU it merely passed through reads back a
+      near-zero ratio that looks exactly like PMU contention but isn't (see
+      `docs/TAKEAWAYS.md`). Fixed by summing `time_running` across all per-CPU rings for an
+      event before comparing to `time_enabled` — verified bit-exact against the real numbers
+      (9 CPUs' `time_running` summed to precisely `time_enabled`, confirming zero real
+      contention) before trusting it.
+- [x] Phase 1's two-thread queue benchmark produces samples attributed to **both** threads —
+      confirmed against `spsc_queue_shared`: CPU 0 (producer) and CPU 1 (consumer) both show
+      real samples and `mux_fraction≈0.997`; the resulting concentration ranking includes lines
+      from both `push()` and `pop()`.
+- [x] U8's divisor validated against the known thread count — `spsc_queue_shared`'s 2 pinned
+      threads show essentially all activity landing on exactly CPU 0 and CPU 1 (as designed),
+      confirming the period-derivation reasoning in `src/main.cpp`'s header comment.
+- [x] README limitations list gains the multithreading entry — done, and upgraded from "gap
+      exists" to "capability added, here's the real cost and the bug the regression guard
+      caught along the way."
+- [x] (Not originally listed, found along the way) `pointer_chase` throttles under this
+      machine's current calibration — reproduced identically with the pre-Gate-7 binary, so it
+      is a pre-existing flakiness unrelated to this phase's changes, not a new regression.
 
 ---
 

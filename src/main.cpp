@@ -1,25 +1,75 @@
-// cachelens — increment 5: second event, concentration ranking.
+// cachelens — Gate 7 Phase 2: per-CPU sampling for multithreaded targets.
 //
 // Forks a child, stops it before exec, opens two independent sampling
-// events (cache-misses = numerator, cache-references = denominator) on
-// the child pid, drains both ring buffers while it runs, resolves
+// events (cache-misses = numerator, cache-references = denominator) PER
+// ONLINE CPU on the child pid, drains all rings while it runs, resolves
 // target-executable samples to file:line via libdw, and ranks sites by
 // miss/access concentration (Wilson lower bound), not raw miss count.
 //
-// Per-event sample periods are calibrated automatically per run, not
+// Why per-CPU (docs/GATE7_PLAN.md §1, U5): perf_event_open(2) states that
+// `inherit=1` together with `cpu=-1` prevents creation of the mmap ring
+// buffer used for sampling. Since inherit is required to see any thread
+// other than the target's initial one, sampling a multithreaded target
+// needs one perf_event_open per (event, online CPU) with `pid=child,
+// cpu=i, inherit=1` -- this is what `perf record` itself does for a
+// workload target. On this machine (12 online CPUs) that is 2 events x 12
+// CPUs = 24 file descriptors and 24 rings, up from 2 in the
+// single-threaded-only design this replaces.
+//
+// U8 (the calibration divisor) -- worth stating explicitly because it is
+// easy to get backwards: the per-event period computed below from the
+// *aggregate* calibrated rate (summed across all target threads, via
+// `inherit=1` counting-mode) is applied UNCHANGED to every per-CPU ring,
+// not divided again by the CPU count. This is correct, not an
+// approximation: if a CPU's true local event rate is `cal.rate * (that
+// CPU's share of total activity)`, then that CPU's ring sampling rate is
+// `local_rate / period = local_rate * target_rate / cal.rate`, and summing
+// over every CPU (shares sum to 1) gives exactly `target_rate` in
+// aggregate, regardless of how activity happens to be distributed across
+// CPUs -- including the degenerate case where only 2 of 12 CPUs are ever
+// used by the target (this project's queue benchmarks). Re-dividing by
+// nproc here would silently under-sample any target that doesn't spread
+// itself across every online CPU.
+//
+// A second per-CPU subtlety, not in the man page, found by the Phase 2
+// regression guard against matrix_bad (a single, unpinned thread the
+// scheduler migrates across CPUs): `time_enabled` on a `pid=child, cpu=i`
+// event tracks wall-clock time since the event armed at exec -- the same
+// value on every per-CPU ring for that run -- regardless of whether the
+// task ever ran on CPU i; `time_running` only tracks the sliver of that
+// time the task actually spent scheduled on that specific CPU. Any single
+// ring's own time_running/time_enabled ratio is therefore near-zero on
+// every CPU the task merely passed through, which looks exactly like PMU
+// contention but isn't. The multiplexing halt check below sums
+// time_running across every per-CPU ring for an event before comparing it
+// to time_enabled, which reconstructs the task's true total scheduled
+// time regardless of which CPU it was on at any instant (see the comment
+// at that check for the matrix_bad numbers that confirmed this).
+//
+// Per-event sample periods are still calibrated automatically per run, not
 // hardcoded: a first child invocation measures both events in pure
-// counting mode (cheap, no ring buffers) to get real event rates, then a
-// second invocation samples both simultaneously with periods derived from
-// those rates (60% of the kernel's own perf_event_max_sample_rate,
-// rounded to the nearest prime). This keeps the tool target-agnostic --
-// no benchmark-specific constants -- and satisfies "pick periods on
-// statistical grounds" without adding a CLI flag.
+// counting mode (cheap, no ring buffers) to get real aggregate event
+// rates, then a second invocation samples both simultaneously with
+// periods derived from those rates (60% of the kernel's own
+// perf_event_max_sample_rate, rounded to the nearest prime). This keeps
+// the tool target-agnostic -- no benchmark-specific constants.
+//
+// Ring size is 512 KiB per CPU (docs/GATE7_PLAN.md U7), not the 1 MiB used
+// by the single-ring predecessor: P3's probe measured the actual mlock
+// budget on this machine and found 1 MiB rings do not fit for all 24
+// (2 events x 12 CPUs), while 512 KiB does with room to spare.
 //
 // precise_ip is pinned at 0 — Zen 4 has no PEBS-equivalent for these
 // events (see docs/TAKEAWAYS.md). Samples are skidded by an unknown
 // amount; source-line-level skid was characterized in Gate 4 and found
-// absorbed (99.99% within +-2 lines) for this specific benchmark pair —
-// that finding is workload-specific, not a general guarantee.
+// absorbed (99.99% within +-2 lines) for a specific single-threaded
+// benchmark pair -- that finding is workload-specific and has NOT yet been
+// re-characterized for a multithreaded target (U9, Gate 7 Phase 3).
+//
+// Known limitation carried from before this gate, now fixed: earlier
+// increments left `attr.inherit` at 0 and silently profiled only the
+// target's initial thread. That gap is closed by this file; see the
+// README's Limitations section.
 //
 // Usage: cachelens -- <command> [args...]
 
@@ -64,23 +114,30 @@ long perf_event_open(struct perf_event_attr* attr, pid_t pid, int cpu,
     std::exit(1);
 }
 
-void diagnose_perf_open_failure(const char* event_label) {
+// Formats an (event, cpu) pair as a short label for error messages, per
+// Gate 7 U13: with 24 independently-throttled/independently-failing rings,
+// a bare event name is no longer enough to say which one broke.
+std::string ring_label(const char* event_label, int cpu) {
+    return std::string(event_label) + "@cpu" + std::to_string(cpu);
+}
+
+void diagnose_perf_open_failure(const std::string& event_label) {
     if (errno == EACCES || errno == EPERM) {
         std::fprintf(stderr,
             "cachelens: fatal: perf_event_open(%s): %s (errno %d)\n"
             "  Diagnosis: kernel.perf_event_paranoid is likely too restrictive.\n",
-            event_label, std::strerror(errno), errno);
+            event_label.c_str(), std::strerror(errno), errno);
         std::exit(1);
     }
     if (errno == ENOENT) {
         std::fprintf(stderr,
             "cachelens: fatal: perf_event_open(%s): %s (errno %d)\n"
             "  Diagnosis: this event is not implemented by the running PMU.\n",
-            event_label, std::strerror(errno), errno);
+            event_label.c_str(), std::strerror(errno), errno);
         std::exit(1);
     }
-    std::fprintf(stderr, "cachelens: fatal: perf_event_open(%s): %s (errno %d)\n", event_label,
-                 std::strerror(errno), errno);
+    std::fprintf(stderr, "cachelens: fatal: perf_event_open(%s): %s (errno %d)\n",
+                 event_label.c_str(), std::strerror(errno), errno);
     std::exit(1);
 }
 
@@ -213,7 +270,8 @@ private:
 };
 
 // ---------------------------------------------------------------------
-// Ring buffer drain (Gate 2/3, extended with PERF_SAMPLE_PERIOD).
+// Ring buffer drain (Gate 2/3, extended with PERF_SAMPLE_PERIOD; Gate 7
+// adds a ring label to die() messages since there are now up to 24 rings).
 // ---------------------------------------------------------------------
 struct Sample {
     uint64_t ip;
@@ -238,18 +296,25 @@ void copy_wrapped(const uint8_t* data, size_t data_size, size_t off, void* dst, 
 
 // See Gate 3 commit for the full acquire/release reasoning; unchanged here.
 void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_size,
-           uint64_t& tail, std::vector<Sample>& samples, RecordHistogram& hist) {
+           uint64_t& tail, std::vector<Sample>& samples, RecordHistogram& hist,
+           const std::string& label) {
     uint64_t head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
     if (head - tail > data_size) {
-        die("ring buffer overflow: data_head - data_tail exceeds data_size — "
-            "unread samples were overwritten; this build does not attempt recovery.");
+        die(("ring buffer overflow on " + label + ": data_head - data_tail exceeds "
+             "data_size — unread samples were overwritten; this build does not attempt "
+             "recovery.").c_str());
     }
     while (tail < head) {
         size_t off = tail % data_size;
         struct perf_event_header hdr;
         copy_wrapped(data, data_size, off, &hdr, sizeof(hdr));
-        if (hdr.size < sizeof(hdr)) die("malformed ring buffer record: header.size too small");
-        if (tail + hdr.size > head) die("malformed ring buffer record: header.size runs past data_head");
+        if (hdr.size < sizeof(hdr)) {
+            die(("malformed ring buffer record on " + label + ": header.size too small").c_str());
+        }
+        if (tail + hdr.size > head) {
+            die(("malformed ring buffer record on " + label +
+                 ": header.size runs past data_head").c_str());
+        }
 
         switch (hdr.type) {
             case PERF_RECORD_SAMPLE: {
@@ -271,9 +336,11 @@ void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_s
                 break;
             case PERF_RECORD_THROTTLE:
             case PERF_RECORD_UNTHROTTLE:
-                die("PERF_RECORD_THROTTLE/UNTHROTTLE observed: the kernel changed the "
-                    "effective sampling rate mid-run. The sample-count-to-aggregate "
-                    "relationship no longer holds for this run.");
+                die(("PERF_RECORD_THROTTLE/UNTHROTTLE observed on " + label + ": the kernel "
+                     "changed the effective sampling rate mid-run. The sample-count-to-"
+                     "aggregate relationship no longer holds for this ring. With 24 "
+                     "independently-throttled rings (Gate 7), this is materially more likely "
+                     "than it was with 2.").c_str());
             default:
                 ++hist.other;
                 break;
@@ -285,7 +352,10 @@ void drain(struct perf_event_mmap_page* meta, const uint8_t* data, size_t data_s
 
 // ---------------------------------------------------------------------
 // DWARF attribution (Gate 4), factored into a reusable function so it can
-// run once per event instead of being duplicated inline.
+// run once per event instead of being duplicated inline. Gate 7: runs once
+// per event on the samples concatenated across every per-CPU ring for that
+// event, so everything downstream of this (ranking, Wilson bound, support
+// gate) is completely unchanged from the single-ring design.
 // ---------------------------------------------------------------------
 struct SourceLoc { std::string file; int line; };
 
@@ -384,9 +454,11 @@ uint64_t nearest_prime(uint64_t n) {
 // ---------------------------------------------------------------------
 // Phase A: calibration. Both events opened in pure counting mode
 // (disabled=1, enable_on_exec=1, no sample_type/sample_period) on one
-// throwaway child run, purely to measure real event rates. This is what
-// lets per-event periods be derived on statistical grounds instead of
-// hardcoded per-benchmark constants — the tool stays target-agnostic.
+// throwaway child run, purely to measure real event rates. Gate 7: now
+// with inherit=1 so the measured rate is the AGGREGATE across every thread
+// the target creates, not just its initial thread -- counting mode has no
+// mmap ring buffer, so inherit=1 with cpu=-1 is legal here even though it
+// would not be for sampling mode (see file header, U5).
 // ---------------------------------------------------------------------
 struct EventPlan {
     const char* label;
@@ -405,6 +477,7 @@ long open_counting(uint64_t hw_config, pid_t child) {
     attr.config = hw_config;
     attr.disabled = 1;
     attr.enable_on_exec = 1;
+    attr.inherit = 1;  // Gate 7: aggregate across every thread the target creates
     attr.exclude_kernel = 1;
     attr.exclude_hv = 1;
     attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
@@ -447,10 +520,12 @@ void calibrate_both(const EventPlan plans[2], char** target_argv, Calibration ou
 
 // ---------------------------------------------------------------------
 // Phase B: measurement. Both events opened in sampling mode on one child,
-// each with its own calibrated period, each with its own ring buffer.
+// once PER ONLINE CPU (Gate 7), each with the same calibrated period
+// (see U8 in the file header), each with its own ring buffer.
 // ---------------------------------------------------------------------
 struct SamplingEvent {
     long fd = -1;
+    int cpu = -1;
     void* mmap_base = nullptr;
     size_t mmap_len = 0;
     const uint8_t* data = nullptr;
@@ -463,8 +538,9 @@ struct SamplingEvent {
     CountReadFormat counts{};
 };
 
-void open_sampling(SamplingEvent& ev, uint64_t hw_config, uint64_t period, pid_t child) {
+void open_sampling(SamplingEvent& ev, uint64_t hw_config, uint64_t period, pid_t child, int cpu) {
     ev.requested_period = period;
+    ev.cpu = cpu;
     struct perf_event_attr attr;
     std::memset(&attr, 0, sizeof(attr));
     attr.size = sizeof(attr);
@@ -472,6 +548,7 @@ void open_sampling(SamplingEvent& ev, uint64_t hw_config, uint64_t period, pid_t
     attr.config = hw_config;
     attr.disabled = 1;
     attr.enable_on_exec = 1;
+    attr.inherit = 1;  // Gate 7: required to see any thread beyond the target's initial one
     attr.exclude_kernel = 1;
     attr.exclude_hv = 1;
     attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
@@ -480,16 +557,21 @@ void open_sampling(SamplingEvent& ev, uint64_t hw_config, uint64_t period, pid_t
     attr.precise_ip = 0;
     attr.wakeup_events = 1000;
 
-    ev.fd = perf_event_open(&attr, child, -1, -1, 0);
-    if (ev.fd < 0) diagnose_perf_open_failure("sampling");
+    ev.fd = perf_event_open(&attr, child, cpu, -1, 0);
+    if (ev.fd < 0) diagnose_perf_open_failure(ring_label("sampling", cpu));
 
     long page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) die_errno("sysconf(_SC_PAGESIZE)");
-    const size_t kDataPages = 1UL << 8;  // 1 MiB data area; see Gate 2 notes
+    // 512 KiB data per ring (Gate 7 U7, docs/GATE7_PLAN.md): P3's probe
+    // measured that 1 MiB rings do not fit for all 24 (2 events x 12
+    // CPUs) under this machine's mlock budget, but 512 KiB does with room
+    // to spare (~3.28s of headroom at the aggregate sample-rate target;
+    // see the Decisions section of GATE7_PLAN.md).
+    const size_t kDataPages = 1UL << 7;
     ev.mmap_len = (1 + kDataPages) * static_cast<size_t>(page_size);
     ev.mmap_base = mmap(nullptr, ev.mmap_len, PROT_READ | PROT_WRITE, MAP_SHARED,
                          static_cast<int>(ev.fd), 0);
-    if (ev.mmap_base == MAP_FAILED) die_errno("mmap(perf ring buffer)");
+    if (ev.mmap_base == MAP_FAILED) die_errno(("mmap(perf ring buffer) " + ring_label("sampling", cpu)).c_str());
     ev.meta = static_cast<struct perf_event_mmap_page*>(ev.mmap_base);
     ev.data = static_cast<uint8_t*>(ev.mmap_base) + ev.meta->data_offset;
     ev.data_size = ev.meta->data_size;
@@ -502,27 +584,59 @@ void finish_sampling(SamplingEvent& ev) {
     close(static_cast<int>(ev.fd));
 }
 
-void print_event_report(const char* label, const SamplingEvent& ev, const AttributionResult& a) {
-    double fraction =
-        static_cast<double>(ev.counts.time_running) / static_cast<double>(ev.counts.time_enabled);
+// Prints one event's report, aggregated across every per-CPU ring for that
+// event (Gate 7). `rings` holds one SamplingEvent per online CPU;
+// `a` is the AttributionResult from classifying the samples concatenated
+// across all of them, so bucket/attribution numbers are already combined.
+void print_event_report(const char* label, const std::vector<SamplingEvent>& rings,
+                         const AttributionResult& a) {
+    uint64_t total_value = 0, total_samples = 0;
+    RecordHistogram total_hist;
+    uint64_t active_cpus = 0;
+    for (const auto& ev : rings) {
+        total_value += ev.counts.value;
+        total_samples += ev.hist.sample;
+        total_hist.sample += ev.hist.sample;
+        total_hist.lost_records += ev.hist.lost_records;
+        total_hist.lost_events += ev.hist.lost_events;
+        total_hist.exit_records += ev.hist.exit_records;
+        total_hist.other += ev.hist.other;
+        if (ev.counts.time_running > 0) ++active_cpus;
+    }
+
     std::printf("\n=== event: %s ===\n", label);
-    std::printf("requested period: %llu\n", static_cast<unsigned long long>(ev.requested_period));
-    std::printf("aggregate: %llu, multiplexing fraction: %.4f\n",
-                static_cast<unsigned long long>(ev.counts.value), fraction);
-    std::printf("samples captured: %zu\n", ev.samples.size());
-    std::printf("record histogram: sample=%llu lost_records=%llu lost_events=%llu exit=%llu other=%llu\n",
-                static_cast<unsigned long long>(ev.hist.sample),
-                static_cast<unsigned long long>(ev.hist.lost_records),
-                static_cast<unsigned long long>(ev.hist.lost_events),
-                static_cast<unsigned long long>(ev.hist.exit_records),
-                static_cast<unsigned long long>(ev.hist.other));
-    if (!ev.samples.empty()) {
+    std::printf("requested period: %llu (uniform across all %zu per-CPU rings)\n",
+                static_cast<unsigned long long>(rings.front().requested_period), rings.size());
+    std::printf("aggregate (summed across %zu rings, %llu with any scheduled time): %llu\n",
+                rings.size(), static_cast<unsigned long long>(active_cpus),
+                static_cast<unsigned long long>(total_value));
+    std::printf("samples captured (summed): %llu\n", static_cast<unsigned long long>(total_samples));
+    std::printf("record histogram (summed): sample=%llu lost_records=%llu lost_events=%llu exit=%llu other=%llu\n",
+                static_cast<unsigned long long>(total_hist.sample),
+                static_cast<unsigned long long>(total_hist.lost_records),
+                static_cast<unsigned long long>(total_hist.lost_events),
+                static_cast<unsigned long long>(total_hist.exit_records),
+                static_cast<unsigned long long>(total_hist.other));
+
+    std::printf("per-CPU breakdown (rings with any scheduled time):\n");
+    for (const auto& ev : rings) {
+        if (ev.counts.time_running == 0) continue;
+        double frac = static_cast<double>(ev.counts.time_running) /
+                      static_cast<double>(ev.counts.time_enabled);
+        std::printf("  cpu %d: value=%llu samples=%llu lost_records=%llu lost_events=%llu mux_fraction=%.4f\n",
+                    ev.cpu, static_cast<unsigned long long>(ev.counts.value),
+                    static_cast<unsigned long long>(ev.hist.sample),
+                    static_cast<unsigned long long>(ev.hist.lost_records),
+                    static_cast<unsigned long long>(ev.hist.lost_events), frac);
+    }
+
+    if (!a.line_counts.empty() || total_samples > 0) {
         std::printf("IP range: [0x%llx, 0x%llx]\n", static_cast<unsigned long long>(a.ip_lo),
                     static_cast<unsigned long long>(a.ip_hi));
     }
     const char* names[4] = {"target executable", "shared library / other user mapping",
                              "kernel space", "unmapped / unclassifiable"};
-    double total = static_cast<double>(ev.samples.size());
+    double total = static_cast<double>(total_samples);
     for (int i = 0; i < 4; ++i) {
         double pct = total > 0 ? 100.0 * static_cast<double>(a.bucket_count[i]) / total : 0.0;
         std::printf("bucket[%s]: %llu (%.4f%%)\n", names[i],
@@ -579,6 +693,10 @@ int main(int argc, char** argv) {
     }
     char** target_argv = argv + argi + 1;
 
+    long nproc_raw = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nproc_raw <= 0) die_errno("sysconf(_SC_NPROCESSORS_ONLN)");
+    const int nr_cpus = static_cast<int>(nproc_raw);
+
     TextRange target_range;
     if (!get_target_text_range(target_argv[0], target_range)) {
         die("could not determine the target's executable range from its ELF headers");
@@ -610,9 +728,12 @@ int main(int argc, char** argv) {
         // choices landing at ~77% of this cap reliable and ~95% flaky
         // (burst variance pushes the instantaneous rate above nominal).
         // 60% keeps real margin below the point already shown marginal.
+        // Gate 7 (U6): this remains a single AGGREGATE target rate, not
+        // multiplied by nr_cpus -- see U8 in the file header for why the
+        // same period derived from it is correct applied per-CPU as-is.
         double target_rate = 0.60 * static_cast<double>(max_rate);
-        std::printf("kernel perf_event_max_sample_rate: %ld/sec; per-event target: %.0f/sec (60%%)\n",
-                    max_rate, target_rate);
+        std::printf("kernel perf_event_max_sample_rate: %ld/sec; aggregate target: %.0f/sec (60%%); "
+                    "online CPUs: %d\n", max_rate, target_rate, nr_cpus);
 
         Calibration cal[2];
         calibrate_both(plans, target_argv, cal);
@@ -633,20 +754,33 @@ int main(int argc, char** argv) {
 
     // --- Measurement run ---
     pid_t child = fork_stop_exec(target_argv);
-    SamplingEvent ev[2];
-    for (int i = 0; i < 2; ++i) open_sampling(ev[i], plans[i].hw_config, period[i], child);
+    std::vector<SamplingEvent> ev[2];
+    for (int i = 0; i < 2; ++i) {
+        ev[i].resize(nr_cpus);
+        for (int c = 0; c < nr_cpus; ++c) open_sampling(ev[i][c], plans[i].hw_config, period[i], child, c);
+    }
     if (kill(child, SIGCONT) != 0) die_errno("kill(SIGCONT)");
 
-    struct pollfd pfd[2] = {{static_cast<int>(ev[0].fd), POLLIN, 0},
-                             {static_cast<int>(ev[1].fd), POLLIN, 0}};
+    std::vector<struct pollfd> pfd(2 * static_cast<size_t>(nr_cpus));
+    for (int i = 0; i < 2; ++i) {
+        for (int c = 0; c < nr_cpus; ++c) {
+            pfd[static_cast<size_t>(i) * nr_cpus + c] = {static_cast<int>(ev[i][c].fd), POLLIN, 0};
+        }
+    }
+
     bool child_exited = false;
     int status = 0;
     while (!child_exited) {
-        int pret = poll(pfd, 2, 100);
+        int pret = poll(pfd.data(), pfd.size(), 100);
         if (pret < 0 && errno != EINTR) die_errno("poll(perf fds)");
         for (int i = 0; i < 2; ++i) {
-            if (pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) {
-                drain(ev[i].meta, ev[i].data, ev[i].data_size, ev[i].tail, ev[i].samples, ev[i].hist);
+            for (int c = 0; c < nr_cpus; ++c) {
+                auto& p = pfd[static_cast<size_t>(i) * nr_cpus + c];
+                if (p.revents & (POLLIN | POLLHUP | POLLERR)) {
+                    auto& e = ev[i][c];
+                    drain(e.meta, e.data, e.data_size, e.tail, e.samples, e.hist,
+                          ring_label(plans[i].label, c));
+                }
             }
         }
         pid_t w = waitpid(child, &status, WNOHANG);
@@ -654,7 +788,10 @@ int main(int argc, char** argv) {
         if (w == child) child_exited = true;
     }
     for (int i = 0; i < 2; ++i) {
-        drain(ev[i].meta, ev[i].data, ev[i].data_size, ev[i].tail, ev[i].samples, ev[i].hist);
+        for (int c = 0; c < nr_cpus; ++c) {
+            auto& e = ev[i][c];
+            drain(e.meta, e.data, e.data_size, e.tail, e.samples, e.hist, ring_label(plans[i].label, c));
+        }
     }
 
     int exit_code = 0;
@@ -666,54 +803,107 @@ int main(int argc, char** argv) {
         exit_code = 128 + WTERMSIG(status);
     }
 
-    for (int i = 0; i < 2; ++i) finish_sampling(ev[i]);
-
-    if (ev[0].counts.time_enabled == 0 || ev[1].counts.time_enabled == 0) {
-        std::fprintf(stderr,
-            "cachelens: warning: at least one counter was never enabled (target likely "
-            "never reached exec); nothing below is a real measurement.\n");
-        return exit_code == 0 ? 1 : exit_code;
+    for (int i = 0; i < 2; ++i) {
+        for (int c = 0; c < nr_cpus; ++c) finish_sampling(ev[i][c]);
     }
 
-    // Halt condition (explicit, per instruction — not a warning): with two
-    // ungrouped hardware counters this PMU has ample general-purpose PMCs
-    // to schedule both without contention. Anything below 0.99 means the
-    // concentration ratio below would be silently computed from a
-    // partially-scheduled counter, which is not a number to trust.
+    // time_enabled tracks wall-clock since the event armed at exec,
+    // regardless of which CPU the task actually used (see file header) --
+    // so unlike time_running, it must be non-zero on EVERY ring if the
+    // target reached exec at all. A zero here on any ring means that
+    // ring's counter never armed, which is a real problem, not a benign
+    // "target didn't use this CPU" case.
     for (int i = 0; i < 2; ++i) {
-        double frac = static_cast<double>(ev[i].counts.time_running) /
-                      static_cast<double>(ev[i].counts.time_enabled);
+        for (int c = 0; c < nr_cpus; ++c) {
+            if (ev[i][c].counts.time_enabled == 0) {
+                std::fprintf(stderr,
+                    "cachelens: warning: %s never armed (time_enabled=0); target likely "
+                    "never reached exec. Nothing below is a real measurement.\n",
+                    ring_label(plans[i].label, c).c_str());
+                return exit_code == 0 ? 1 : exit_code;
+            }
+        }
+    }
+
+    // Halt condition, per event, aggregated across every per-CPU ring —
+    // NOT per (event, CPU) as a naive port of the single-ring check would
+    // do. Empirically verified against matrix_bad (a single, unpinned
+    // thread the scheduler migrates across CPUs over an ~11.8s run): each
+    // individual ring's own time_running/time_enabled ratio is low on
+    // every CPU it merely passed through (e.g. 0.0002 on a CPU it touched
+    // for 2.8ms out of 13.7s total) -- not because of PMU contention, but
+    // because `time_enabled` tracks wall-clock since the event armed at
+    // exec (the same value on every per-CPU ring), while `time_running`
+    // on any ONE cpu-scoped ring only tracks the sliver of that time the
+    // task happened to be scheduled on that specific CPU. Summing
+    // time_running across all nr_cpus rings for one event reconstructs
+    // the task's total scheduled time regardless of which CPU it was on
+    // at any instant, and that sum matched time_enabled to the nanosecond
+    // in the matrix_bad run above (13,703,492,089 both sides) -- meaning
+    // zero genuine PMU contention, exactly as the single-ring design's
+    // check intended to verify. Checking any individual ring's own ratio
+    // instead would flag ordinary OS scheduling as a fatal multiplexing
+    // failure on every multi-CPU machine running an unpinned target.
+    for (int i = 0; i < 2; ++i) {
+        uint64_t total_running = 0;
+        uint64_t time_enabled = 0;
+        for (int c = 0; c < nr_cpus; ++c) {
+            total_running += ev[i][c].counts.time_running;
+            time_enabled = ev[i][c].counts.time_enabled;  // identical on every ring; last write is fine
+        }
+        double frac = time_enabled > 0
+            ? static_cast<double>(total_running) / static_cast<double>(time_enabled) : 0.0;
         if (frac < 0.99) {
             std::fprintf(stderr,
-                "cachelens: fatal: HALT CONDITION: event %s multiplexing fraction %.4f is "
+                "cachelens: fatal: HALT CONDITION: event %s: multiplexing fraction %.4f "
+                "(sum of time_running across all %d per-CPU rings, over time_enabled) is "
                 "below 0.99. The concentration ratio would be silently wrong; refusing to "
-                "compute it.\n", plans[i].label, frac);
+                "compute it.\n", plans[i].label, frac, nr_cpus);
             return 1;
         }
     }
 
     // Halt condition: every sample's kernel-reported PERF_SAMPLE_PERIOD
-    // must equal what this event actually requested. A mismatch means the
-    // kernel granted something other than what we asked for -- the
-    // period-scaling below would then be silently wrong.
+    // must equal what its ring actually requested (uniform across CPUs for
+    // a given event, per U8) -- a mismatch means the kernel granted
+    // something other than what was asked for, and the period-scaling
+    // below would then be silently wrong.
     for (int i = 0; i < 2; ++i) {
-        for (const auto& s : ev[i].samples) {
-            if (s.period != ev[i].requested_period) {
-                std::fprintf(stderr,
-                    "cachelens: fatal: HALT CONDITION: event %s: a sample reports "
-                    "PERF_SAMPLE_PERIOD=%llu but the requested period was %llu.\n",
-                    plans[i].label, static_cast<unsigned long long>(s.period),
-                    static_cast<unsigned long long>(ev[i].requested_period));
-                return 1;
+        for (int c = 0; c < nr_cpus; ++c) {
+            for (const auto& s : ev[i][c].samples) {
+                if (s.period != ev[i][c].requested_period) {
+                    std::fprintf(stderr,
+                        "cachelens: fatal: HALT CONDITION: %s: a sample reports "
+                        "PERF_SAMPLE_PERIOD=%llu but the requested period was %llu.\n",
+                        ring_label(plans[i].label, c).c_str(),
+                        static_cast<unsigned long long>(s.period),
+                        static_cast<unsigned long long>(ev[i][c].requested_period));
+                    return 1;
+                }
             }
         }
     }
 
+    // Concatenate every per-CPU ring's samples per event before
+    // attribution, so everything downstream (ranking, Wilson bound,
+    // support gate) is unchanged from the single-ring design.
+    std::vector<Sample> combined_samples[2];
+    for (int i = 0; i < 2; ++i) {
+        size_t total = 0;
+        for (const auto& e : ev[i]) total += e.samples.size();
+        combined_samples[i].reserve(total);
+        for (const auto& e : ev[i]) {
+            combined_samples[i].insert(combined_samples[i].end(), e.samples.begin(), e.samples.end());
+        }
+    }
+
     AttributionResult attr[2];
-    for (int i = 0; i < 2; ++i) attr[i] = classify_and_attribute(ev[i].samples, target_range, dwarf);
+    for (int i = 0; i < 2; ++i) attr[i] = classify_and_attribute(combined_samples[i], target_range, dwarf);
     for (int i = 0; i < 2; ++i) print_event_report(plans[i].label, ev[i], attr[i]);
 
-    // --- Concentration ranking ---
+    // --- Concentration ranking (unchanged from the single-ring design —
+    // it operates only on attr[].line_counts, a plain map, regardless of
+    // how many rings fed into it) ---
     // period_scale converts a raw sample-count ratio (m/n) into an
     // estimate of the true event-count ratio: E[true_miss] ~= m*period_miss,
     // E[true_access] ~= n*period_access, so concentration ~= (m/n) *
@@ -730,6 +920,8 @@ int main(int argc, char** argv) {
     // rule-of-thumb minimum sample size for a normal-approximation CI to
     // be reasonable, and is also docs/ARCHITECTURE.md's own stated
     // starting point -- chosen before this run, not fit to its outcome.
+    // Gate 7 U12: not re-tuned for a fragmented multithreaded workload; if
+    // it excludes the interesting site, that is reported, not rescued.
     constexpr uint64_t kMinAccessSamples = 30;
     constexpr double kZ95 = 1.96;
 

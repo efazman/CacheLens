@@ -140,7 +140,7 @@ Two independently-opened sampling events on the child pid, each with its own rin
 | `enable_on_exec` | 1 | arms at `execve`, not at `fork` |
 | `exclude_kernel` | 1 | works under default `perf_event_paranoid=2`, no root |
 | `exclude_hv` | 1 | same |
-| `inherit` | 0 | benchmarks are single-threaded |
+| `inherit` | 0 → **1 as of Gate 7** | was 0 when every benchmark here was single-threaded; multithreaded targets need `inherit=1` plus one event per (event, online CPU) rather than one shared `cpu=-1` event — see `docs/GATE7_PLAN.md` §1 and `src/main.cpp`'s header comment for why `cpu=-1` and `inherit=1` cannot be combined for sampling |
 
 **Two independent events, not a group.** Grouping them onto one ring would require
 `PERF_SAMPLE_STREAM_ID` and an id→event map to demultiplex, and group scheduling can fail with

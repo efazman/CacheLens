@@ -182,10 +182,23 @@ than the true one.
 - **Single machine, single configuration, single moment in time.** AMD Ryzen 5 7600X (Zen 4),
   32 MiB L3, 16 GB DDR5 single-channel, Ubuntu, kernel `7.0.0-29-generic`. Not reproduced
   elsewhere.
-- **No cross-architecture abstraction (PEBS/IBS/SPE), no system-wide or multi-process
-  profiling, no inline-frame expansion** (a sample inside an inlined function attributes to the
-  inline call site — both benchmarks are fully inlined into `main` at `-O1`), **no automatic
-  code rewriting, no GUI.**
+- **Multithreaded targets: supported since Gate 7, at a real cost.** Earlier increments left
+  `attr.inherit` at 0 and silently profiled only the target's initial thread — undocumented at
+  the time. Sampling every thread of a multithreaded target requires one `perf_event_open` per
+  (event, online CPU) with `inherit=1` (`pid=-1` and `inherit=1` together disable the mmap ring
+  buffer entirely — see `docs/GATE7_PLAN.md` §1), which is 24 file descriptors and 24 ring
+  buffers on this 12-CPU machine, up from 2. See
+  [`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) and
+  [`docs/GATE7_IMPLEMENTATION.md`](docs/GATE7_IMPLEMENTATION.md) for the design and the unknowns
+  closed along the way — including a real bug the regression guard caught: a per-CPU task
+  event's `time_running`/`time_enabled` ratio looks exactly like PMU contention on any CPU an
+  unpinned thread merely migrated through, and has to be summed across all per-CPU rings for an
+  event before that ratio means anything.
+- **No system-wide (`pid=-1`) or multi-process profiling.** Per-CPU events are opened for one
+  target task tree, not the whole machine — a deliberate scope boundary, not a gap.
+- **No cross-architecture abstraction (PEBS/IBS/SPE), no inline-frame expansion** (a sample
+  inside an inlined function attributes to the inline call site — both matrix benchmarks are
+  fully inlined into `main` at `-O1`), **no automatic code rewriting, no GUI.**
 
 ## Reproducing
 
