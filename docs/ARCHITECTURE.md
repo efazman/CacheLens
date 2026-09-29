@@ -10,6 +10,17 @@ from the tree (git history still has it). `DESIGN.md` and `OVERVIEW.md` moved to
 per §8 rather than being deleted. §7's other line items (Mach-O binaries, `.DS_Store`, the `{src/`
 residue, the LLM layer) were already gone before this pass.
 
+**Where the shipped code diverges from this document (2026-09-29).** This is the design
+baseline as written on 2026-08-15. In three places the implementation deliberately does
+something else. Each section below still has its original spec, followed by a note saying what
+the code does and why:
+
+| § | This document specifies | `src/main.cpp` does | Why |
+|---|---|---|---|
+| §1.1 | ten-file module layout | one ~1,025-line `main.cpp`, split into banner-commented sections | see §1.1 note |
+| §2.2 | `PERF_TYPE_HW_CACHE`, `LL \| OP_READ \| RESULT_MISS/ACCESS` | `PERF_TYPE_HARDWARE`, `PERF_COUNT_HW_CACHE_MISSES` / `_REFERENCES` | see §2.2 note |
+| §2.4 | `precise_ip` 3→2→1→0 negotiation ladder | `precise_ip = 0`, hardcoded | see §2.4 note |
+
 ---
 
 ## 0. What changed and why this document exists
@@ -105,6 +116,17 @@ Roughly 1,050 lines. Dependencies: `libdw`/`libelf` (elfutils). Nothing else.
 another's. It plays the role `models.py` played in the Python version, and for the same reason:
 one place to see the shape of the data.
 
+> **As built (diverges):** none of these files exist. Everything is in one file, `src/main.cpp`
+> (~1,025 lines, close to the ~1,050 estimate above), and `CMakeLists.txt` builds that file
+> alone. The planned modules are banner-commented sections of that file, in pipeline order:
+> child lifecycle (`fork_stop_exec`, `reap`) → ELF text range and address classification →
+> ring-buffer drain → DWARF attribution → Wilson bound → Phase A calibration (counting mode) →
+> Phase B sampling (per-CPU rings) → `main`, which does aggregation and reporting. There is no
+> `types.hpp`. The shared structs (`Sample`, `SourceLoc`, `AttributionResult`, …) are defined
+> just before the section that first uses them. There is no JSON reporter; output goes to the
+> terminal only. The module split is still a reasonable refactor, but it has not been done, and
+> nothing else in this document depends on it.
+
 ---
 
 ## 2. Stage 1 — Sample
@@ -146,6 +168,22 @@ Two independently-opened sampling events on the child pid, each with its own rin
 `PERF_SAMPLE_STREAM_ID` and an id→event map to demultiplex, and group scheduling can fail with
 `EINVAL` when the counters cannot be scheduled together on the PMU. Two separate events with
 two separate rings sidesteps both problems and costs one extra `mmap`. Take the simpler design.
+
+> **As built (diverges):** the code does not use `PERF_TYPE_HW_CACHE`. Both events are
+> `PERF_TYPE_HARDWARE`: `PERF_COUNT_HW_CACHE_MISSES` is the numerator and
+> `PERF_COUNT_HW_CACHE_REFERENCES` is the denominator (`open_counting` / `open_sampling` in
+> `src/main.cpp`). These are the same generalized events that stock
+> `perf stat -e cache-misses,cache-references` counts, and that command produced the Phase 1
+> ground-truth baseline ([`results/phase1_matrix.txt`](../results/phase1_matrix.txt)). Using
+> them means CacheLens's calibration-phase aggregate measures the same events as that
+> independent baseline, and can be checked against it.
+>
+> The cost is precision of meaning. The kernel decides what "cache-misses" maps to on each CPU,
+> and this project has not verified with raw PMU event codes that on Zen 4 it counts LLC read
+> misses only, which is what the table above asked for (README, Limitations). The
+> `PERF_TYPE_HW_CACHE` LL-read configuration has not been tried on this machine. Two other rows
+> in the table have also changed: `sample_type` is `IP | TID | PERIOD`, since `TIME` was never
+> decoded and was dropped; and `precise_ip` is fixed at 0 (see §2.4).
 
 ### 2.3 The ring buffer, and the wraparound de-risking
 
@@ -196,6 +234,24 @@ The mitigation is ten lines: attempt `perf_event_open` with `precise_ip=3`, on `
 PEBS/IBS/SPE naming, no abstraction layer — just ask the kernel for the best it will give and
 report what you got. Frame it as *"the ranking metric requires low skid, so the sampler
 negotiates for it"*, which is a measurement argument, not a portability claim.
+
+> **As built (diverges):** the ladder was tried once and then removed. In Gate 2
+> (2026-08-18), requesting `precise_ip=2` or `1` for these events on this Zen 4 part failed with
+> `ENOENT`. That means the PMU has no precise-sampling implementation for the event at all, not
+> that the request was malformed or lacked permission. Only `0` is accepted
+> ([`TAKEAWAYS.md`](TAKEAWAYS.md), "Zen 4 has no PEBS-equivalent"). A ladder that always
+> ends at 0 on the only target machine is dead code, so `open_sampling` sets `precise_ip = 0`
+> directly. The granted level is not printed, because it cannot be anything else.
+>
+> The threat this section describes still applies: at level 0, skid is unbounded. What was done
+> instead of negotiating was to measure it. Gate 4 found 99.99% of samples within ±2 source
+> lines on the `matrix_bad` hot loop, a result the README marks as specific to that workload.
+> Gate 7 then showed where that result stops holding: on the SPSC queue, the strongest
+> false-sharing signal landed one instruction past the index store
+> ([`results/gate7_false_sharing.txt`](../results/gate7_false_sharing.txt)). The AMD route to
+> precise attribution is IBS (`ibs_op`), a separate dynamic PMU type rather than a
+> `precise_ip` level, and it remains deliberately out of scope. Running on an Intel host would
+> require bringing the ladder back.
 
 ---
 
