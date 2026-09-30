@@ -1,65 +1,171 @@
 # CacheLens
 
-A CLI profiler that samples hardware cache-miss and cache-reference events on Linux via
-`perf_event_open`, attributes them to source lines with `libdw`, and ranks sites by miss
-concentration instead of raw miss count.
+CacheLens is a Linux command-line profiler that finds **the source lines that use the cache
+badly**, not just the lines that run the most. It samples hardware cache-miss and
+cache-reference events directly through `perf_event_open`, attributes every sample to a
+`file:line` with `libdw`, and ranks lines by **miss concentration** (misses per access at that
+line, scored by a Wilson lower bound) instead of raw miss count.
 
-## The headline result
+Most profilers rank by raw miss count, and raw miss count mostly re-finds the hottest loop: code
+that runs more collects more samples whether or not it has a locality problem. CacheLens asks a
+different question: *of the memory accesses made at this line, how many miss?* It is one
+self-contained C++17 binary: no `perf` CLI underneath, no `addr2line` subprocess, no Python. It
+comes with a set of paired benchmarks and a measurement record showing where the method works
+and where it falls short.
 
-On `matrix_bad` (naive i-j-k matrix multiply), raw miss count and concentration ranking pick
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design of the four-stage pipeline, the ranking metric, and where the shipped code departs from the spec |
+| [`docs/TAKEAWAYS.md`](docs/TAKEAWAYS.md) | Debugging log: every real bug found, its root cause, and why it wasn't obvious |
+| [`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) | Multithreaded-target design, unknowns register, and the pre-registered false-sharing prediction |
+| [`docs/GATE7_IMPLEMENTATION.md`](docs/GATE7_IMPLEMENTATION.md) | How each Gate 7 unknown was closed, phase by phase |
+| [`probes/README.md`](probes/README.md) | Four standalone kernel/PMU probes kept as evidence |
+| [`results/`](results/) | Raw measurement records, each with its environment block attached |
+
+## The Headline Result
+
+On `matrix_bad` (naive i-j-k matrix multiply), raw miss count and concentration pick
 **different lines** as the bottleneck:
 
-| line | what it is | raw miss count | rank by raw count | Wilson lower-bound concentration | rank by concentration |
-|---|---|---|---|---|---|
-| `matrix_bad.cpp:43` | loop control (`for (k...)`) | 331,412 | **#1** | 0.059 | #4 |
+| Line | What it is | Raw misses | Raw rank | Concentration (Wilson LB) | Concentration rank |
+| --- | --- | ---: | :---: | ---: | :---: |
+| `matrix_bad.cpp:43` | loop control, `for (k ...)` | 331,412 | **#1** | 0.059 | #4 |
 | `matrix_bad.cpp:44` | `sum += ... * mat(B, k, j)` | 234,147 | #2 | **0.360** | **#1** |
 
-Raw count picks the loop-control line — it executes every iteration, so it absorbs the most
-samples regardless of what it does. Concentration correctly picks line 44, the line that
-actually strides through `B` column-wise. Only one of these is the real locality bug, and raw
-count doesn't find it. Full data: [`results/gate5_concentration.txt`](results/gate5_concentration.txt).
+Line 43 runs every iteration, so it collects the most samples no matter what it does. Line 44
+walks `B` column by column, and that is the actual locality bug. Concentration ranks it first;
+raw count does not. The same split shows up again under the Gate 7 per-CPU sampler
+([`results/gate7_phase2_sampler.txt`](results/gate7_phase2_sampler.txt)). Rewriting the loop
+in cache-friendly order (`matrix_good`) makes it **2.08–2.10x faster** by wall clock, measured
+with stock `perf stat` independently of CacheLens
+([`results/phase1_matrix.txt`](results/phase1_matrix.txt)).
 
-## Real output
+## Basic Features
 
-A live run against `matrix_bad`, unedited except for the two lines of the benchmark's own
-`printf` output (`C[0][0] = ...`, printed once per internal calibration/measurement pass),
-removed for length:
+| **Feature**                                                  | **CacheLens**      |
+| ------------------------------------------------------------ | ------------------ |
+| Direct `perf_event_open` sampling (not a `perf` wrapper)     | :heavy_check_mark: |
+| In-process DWARF line attribution via `libdw`                | :heavy_check_mark: |
+| Concentration ranking (Wilson score lower bound, 95%)        | :heavy_check_mark: |
+| Raw miss-count ranking printed alongside for comparison      | :heavy_check_mark: |
+| Minimum-support gate, with excluded sites listed (not hidden)| :heavy_check_mark: |
+| Automatic per-run sample-period calibration                  | :heavy_check_mark: |
+| Exact run replay with `--period N`                           | :heavy_check_mark: |
+| Multithreaded targets (per-CPU rings, `inherit=1`)           | :heavy_check_mark: |
+| Lost-record, throttle and multiplexing accounting            | :heavy_check_mark: |
+| Sample bucketing: target / shared lib / kernel / unmapped    | :heavy_check_mark: |
+| Drain-path latency self-measurement                          | :heavy_check_mark: |
+| Precise sampling (Intel PEBS / AMD IBS / Arm SPE)            | :x:                |
+| PIE executables                                              | :x:                |
+| Line attribution inside shared libraries                     | :x: (bucketed only)|
+| Inline-frame expansion                                       | :x:                |
+| System-wide or multi-process profiling                       | :x:                |
+| JSON / machine-readable output                               | :x:                |
+| macOS, Windows, or VMs without a virtualized PMU             | :x:                |
+
+### Knowledge Prerequisites
+
+**Note: CacheLens is simple to run, but its output takes some background to read correctly.**
+You should know the basics of the CPU cache hierarchy, how sampling profilers work (periods,
+skid, lost samples), and what a DWARF line table can and cannot tell you. Concentration is a
+ratio of two event streams sampled *independently*. It is not per-access ground truth, and on
+hardware without precise sampling it inherits skid (see [Limitations](#limitations)).
+Reading a ranking without that context can point you at the wrong line.
+
+## Requirements
+
+CacheLens needs a **real hardware PMU on Linux**. Most cloud VMs and all Apple Silicon Macs
+lack one. Check before building anything:
+
+```bash
+# 1. The PMU must return real integers, not "<not supported>":
+perf stat -e cache-misses,cache-references,instructions,cycles /bin/true
+
+# 2. Allow per-process profiling without root:
+sudo sysctl -w kernel.perf_event_paranoid=1
+
+# 3. Build dependencies (Debian/Ubuntu):
+sudo apt install build-essential cmake pkg-config libdw-dev
+```
+
+| Component | Required | Tested with |
+| --- | --- | --- |
+| OS | Linux with `perf_event_open` | Ubuntu, kernel `7.0.0-29-generic` |
+| CPU | Hardware PMU exposing `cache-misses` / `cache-references` | AMD Ryzen 5 7600X (Zen 4), 12 logical CPUs |
+| Compiler | C++17 | g++ 15.2.0 |
+| Build | CMake ≥ 3.16, `pkg-config` | — |
+| Library | elfutils `libdw` / `libelf` | — |
+
+## Quick Build
+
+```bash
+git clone https://github.com/efazman/CacheLens.git
+cd CacheLens
+
+cmake -S . -B build && cmake --build build     # -> ./build/cachelens (RelWithDebInfo)
+make -C benchmarks                             # matrix_bad, matrix_good, pointer_chase
+```
+
+Optional benchmark sets: `make -C benchmarks queues` (SPSC/MPMC false-sharing pairs) and
+`make -C benchmarks latency` (open-loop latency harness).
+
+## Verifying the Build
+
+There is no unit-test suite. The check is end-to-end: run the tool on the benchmark whose
+answer is already known.
+
+```bash
+./build/cachelens -- ./benchmarks/matrix_bad
+```
+
+A working install ranks **`matrix_bad.cpp:44` #1 by concentration** and
+**`matrix_bad.cpp:43` #1 by raw count**, reports `lost_records=0`, and attributes over 99.9% of
+samples to the target executable. If `perf_event_open` fails, CacheLens prints a diagnosis
+(`perf_event_paranoid` too strict, or the event isn't implemented by this PMU) and exits
+non-zero.
+
+## Example
+
+### Profiling your own program
+
+```bash
+g++ -O1 -g -fno-omit-frame-pointer -no-pie -o myprog myprog.cpp
+./build/cachelens -- ./myprog --its --own --args
+```
+
+| Flag | Why it matters |
+| --- | --- |
+| `-g` | DWARF line tables are the only thing attribution reads. Without them CacheLens refuses to run. |
+| `-no-pie` | Attribution is offline against the ELF on disk, so the link-time address has to equal the runtime address. |
+| `-fno-omit-frame-pointer` | Not needed by CacheLens, which doesn't unwind stacks. It keeps builds comparable with stock `perf record -g` runs. |
+| `-O1` rather than `-O2` | Recommended when comparing two builds. At `-O2`, GCC vectorizes one matrix loop but not the other, which confounds the comparison. |
+
+### What a run does
+
+1. **Calibrate:** runs the target once in counting mode to measure real event rates, then picks
+   a prime sample period per event at 60% of the kernel's `perf_event_max_sample_rate`.
+2. **Sample:** runs it again with two independent sampling events (misses, references) per
+   online CPU, each on its own mmap ring, armed exactly at `execve` by `enable_on_exec`.
+3. **Attribute:** resolves each sampled IP to `file:line` with `libdw`, and buckets samples
+   outside the target instead of guessing.
+4. **Rank:** scales both counts by their periods, computes misses/accesses per line, and
+   ranks by Wilson lower bound. Lines with fewer than 30 access samples are listed separately.
+
+### Reading the output
+
+The final section of a `matrix_bad` run
+([`results/gate5_concentration.txt`](results/gate5_concentration.txt)):
 
 ```
-kernel perf_event_max_sample_rate: 79000/sec; per-event target: 47400/sec (60%)
-child exited, status 0
-calibration[miss]: value=2223800198 wall=11.4508s rate=194204925/sec
-calibration[access]: value=25516161158 wall=11.4508s rate=2228331564/sec
 period[miss]: 4099 (calibrated)
 period[access]: 47017 (calibrated)
-child exited, status 0
-
-=== event: miss ===
-requested period: 4099
-aggregate: 2319394172, multiplexing fraction: 1.0000
-samples captured: 565843
+...
 record histogram: sample=565843 lost_records=0 lost_events=0 exit=0 other=0
-IP range: [0x4012c2, 0xffffffffa7520793]
 bucket[target executable]: 565721 (99.9784%)
-bucket[shared library / other user mapping]: 2 (0.0004%)
-bucket[kernel space]: 120 (0.0212%)
-bucket[unmapped / unclassifiable]: 0 (0.0000%)
-distinct kernel-space IPs (6): 0xffffffffa5e00248 0xffffffffa5e00b90 0xffffffffa5e00e43 0xffffffffa5e00ef0 0xffffffffa5e00f03 0xffffffffa7520793
 attributed: 565721, unattributed: 0 (0.0000%)
-
-=== event: access ===
-requested period: 47017
-aggregate: 25839373480, multiplexing fraction: 1.0000
-samples captured: 549575
-record histogram: sample=549575 lost_records=0 lost_events=0 exit=0 other=0
-bucket[target executable]: 549459 (99.9789%)
-bucket[shared library / other user mapping]: 16 (0.0029%)
-bucket[kernel space]: 100 (0.0182%)
-bucket[unmapped / unclassifiable]: 0 (0.0000%)
-attributed: 549459, unattributed: 0 (0.0000%)
-
-period scale (miss/access): 4099 / 47017 = 0.087181
-
+...
 === concentration ranking (Wilson lower bound, 95%, min 30 access samples) ===
   #1  matrix_bad.cpp:44  miss=234147 access=56750  concentration=0.359704  wilson_lb=0.359683
   #2  matrix_bad.cpp:41  miss=83 access=71  concentration=0.101916  wilson_lb=0.098922
@@ -72,257 +178,146 @@ insufficient samples (< 30 access samples), excluded from ranking (2 sites):
 === raw miss-count ranking (for comparison) ===
   #1  matrix_bad.cpp:43  miss=331412
   #2  matrix_bad.cpp:44  miss=234147
-  #3  matrix_bad.cpp:41  miss=83
-  #4  matrix_bad.cpp:42  miss=79
 ```
 
-## Why concentration, not raw count
+| Field | Meaning |
+| --- | --- |
+| `period[...]` | Events per sample. Pass it back with `--period N` to replay a run exactly. |
+| `lost_records` / `lost_events` | Samples the kernel dropped. Non-zero means the ring drain fell behind. |
+| `bucket[...]` | Where sampled IPs landed: target, shared library, kernel, or unmapped. Only target samples are ranked. |
+| `concentration` | Period-scaled misses ÷ accesses at the line: a density ratio, not a per-access fact. |
+| `wilson_lb` | The lowest concentration consistent with the evidence. A line needs a high ratio **and** enough samples to rank. |
 
-Most profilers rank by raw miss count, which mostly re-finds the hottest loop — code that runs
-more absorbs more samples whether or not it uses the cache badly, which is exactly the failure
-shown above. The obvious objection to ranking by a ratio instead: doesn't `misses/accesses` just
-surface every low-traffic line with a lucky 3/3 sample? That's why ranking uses the **Wilson
-score lower bound** (95%, z=1.96) rather than the raw ratio: it asks "what's the lowest
-concentration consistent with the evidence," so a site needs both a high ratio *and* enough
-samples to rank highly. Sites below 30 access samples are excluded from ranking entirely and
-listed separately as insufficient — not silently dropped, not shown with a falsely confident
-number.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    T[target binary] --> S[Sample]
-    S --> A[Attribute]
-    A --> R[Rank]
-    R --> P[Report]
-```
-
-**Sample** — `perf_event_open`, two independent events (not grouped), each with its own mmap
-ring buffer, on one forked-and-stopped child; `enable_on_exec=1` arms both at the `execve`
-boundary. **Attribute** — `libdw`, offline against the target ELF on disk; no `addr2line`
-subprocess, no live-process attach. **Rank** — concentration, scored by Wilson lower bound.
-**Report** — ranked table plus the raw-count ranking, printed alongside for comparison.
-
-## Build and run
-
-```bash
-# PMU must be real (most cloud VMs have none):
-perf stat -e cache-misses,cache-references,instructions,cycles /bin/true
-
-# per-process profiling without root:
-sudo sysctl -w kernel.perf_event_paranoid=1
-
-# elfutils dev headers (libdw, libelf) — libdw-dev on Debian/Ubuntu — plus cmake, a C++17 compiler
-make -C benchmarks
-cmake -S . -B build && cmake --build build
-
-./build/cachelens -- ./benchmarks/matrix_bad
-./build/cachelens -- ./benchmarks/matrix_good
-```
-
-Verified from a clean clone into a fresh directory: PMU check, `perf_event_paranoid`, both
-builds, and both runs above all succeed as shown.
-
-## Case study
-
-Two ground-truth numbers, measured by different tools, kept separate — they are not the same
-claim and are not merged into one table:
-
-**Stock `perf`, n=5, quiet machine, `performance` governor** — the resume-claim baseline,
-independent of anything CacheLens computes. Original: 2.095x wall-clock speedup, 8.99%/1.23%
-miss rate (7.31x ratio) — [`results/phase1_matrix.txt`](results/phase1_matrix.txt), unmodified.
-A later, independent re-measurement under controlled conditions came in at 2.084x, within
-0.46–0.97% of the original — ordinary run-to-run variance, not a correction —
-[`results/drift_investigation.txt`](results/drift_investigation.txt).
-
-**CacheLens's own aggregate** (calibration phase, whole-program, not sampled): 8.90%/1.14% miss
-rate — directionally consistent with Phase 1 but not tuned to match, and not expected to match
-exactly (different run, different moment). Per-site concentration (35–36% at the hottest line)
-is not expected to match either whole-program number, and doesn't: the hottest site sits far
-above the whole-program average because the average is diluted by every non-memory instruction
-in the program. [`results/gate5_concentration.txt`](results/gate5_concentration.txt).
-
-**The governor null result:** `performance` vs `powersave`, same quiet machine, differed by
-+0.07–0.11% — noise. This corroborates rather than contradicts the speedup's cause: if it had a
-compute-bound component, clock frequency would matter and this test would show a real gap. It
-doesn't — independent confirmation, via IPC (≈1.57 vs ≈3.73), that the speedup is eliminated
-stalls, not more throughput.
-
-**Background load biases the result upward, not down.** A noisy-machine run reported 2.20x —
-*larger* than the quiet run's 2.08x. L3 contention degrades the cache-hostile benchmark more
-than the cache-friendly one, so an unquiesced reproduction will tend to report a *better* number
-than the true one.
-
-## Second case study: false sharing on a multithreaded queue (Gate 7)
-
-A pre-registered prediction (recorded before any measurement existed —
-[`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) §0) about a bounded SPSC queue whose producer-owned
-and consumer-owned index sit either on one cache line or on two, profiled with a producer and
-consumer thread pinned to separate physical cores. Adjudicated item by item, honestly, including
-where it didn't land exactly as predicted — full data and reasoning:
-[`results/gate7_false_sharing.txt`](results/gate7_false_sharing.txt).
-
-**The wall-clock effect is unambiguous:** the padded build (index fields on separate cache
-lines) runs 2.75x–3.62x faster than the unpadded build, reproduced across every measurement
-taken. `objdump` confirms the fields sit 8 bytes apart in the unpadded build and exactly 64
-bytes apart in the padded one.
-
-**The concentration ranking did not land on the literal predicted line — and the reason why is
-itself informative.** Neither index-update instruction (the actual `store` to the producer's or
-consumer's index) ranks #1 by concentration; the top slot goes to a spin-wait check line instead.
-But the single largest *relative* response to padding, of any line in the function — a **+673%**
-jump between the padded and unpadded builds — lands on the one x86 instruction immediately
-*after* the consumer's index-update store, and that line also ranks in the top 3 by absolute
-concentration on a large, reliable sample (21,440 pooled access samples, not a low-count fluke).
-That is one instruction of skid, not a miss: this project previously measured skid at 99.99%
-within ±2 source lines on a 7-instruction, 2-line hot loop (Gate 4) — a body with almost nowhere
-else for skid to land. This queue's `push()`/`pop()` span ten-plus lines each, giving skid real
-room to move, and it visibly used it.
-
-**Raw miss-count ranking's #1 is a third, different line again** (the busiest spin-check by call
-frequency) — reproducing, on a structurally different workload, the same "raw count finds the
-busy line, not the interesting one" divergence the first case study demonstrated. Concentration
-and raw count disagree with each other here exactly as they did for `matrix_bad`; neither one
-happens to isolate the specific instruction this experiment targeted as cleanly as Gate 5's
-result did.
-
-**Reading it straight:** the pre-registered prediction about *which exact line* wins the ranking
-did not hold. The prediction about the mechanism — that this is a real, hardware-visible,
-padding-sensitive effect, and that concentration and raw count see it differently — did. A
-failed prediction reported with the data that explains why is worth more than a success that
-wasn't checked this closely.
-
-## Tail latency, and a governor result that does *not* transfer
-
-[`results/gate7_latency.txt`](results/gate7_latency.txt): an open-loop, rate-controlled harness
-(500,000 ops/sec, well below the queue's unsaturated capacity) measuring padded-vs-shared queue
-latency, and separately, CPU governor sensitivity — re-asked rather than assumed, because Gate
-5's governor null result was measured on a memory-stalled workload and a latency-sensitive one
-is a different question.
-
-**The false-sharing penalty shows up in typical latency, not in the tail, at this load level.**
-p50 and p99 are consistently 10-20% higher on the shared build, every run (n=5 each); p99.9 and
-above overlap completely between builds — at a rate this far from saturation, tail latency is
-dominated by ordinary OS scheduling noise, which is larger than the cache-line-placement effect
-and swamps it.
-
-**The governor result does not transfer, confirming it shouldn't have been assumed to.** Typical
-latency (p50/p99) is governor-insensitive, matching Gate 5's direction. The tail is not:
-`performance` gives a lower typical p99.9 but wildly inconsistent run-to-run behavior and
-occasional extreme outliers (up to 1.85ms — a ~25,000x multiple of p50, visible only because the
-open-loop design doesn't hide stalls the way a closed-loop harness would); `powersave` gives a
-higher but remarkably stable p99.9 (under 3% spread across 5 runs). The cause is not confirmed —
-stated as a hypothesis (turbo/thermal transition stalls under sustained max-frequency load), not
-a finding.
-
-## Does CacheLens keep up with its own targets? (Gate 7 Phase 6)
-
-Nothing new is built for this section — it only measures. Full data:
-[`results/gate7_drain.txt`](results/gate7_drain.txt).
-
-**The drain keeps up, comfortably.** Against a genuinely contended two-thread workload, the
-worst single poll-loop drain iteration observed was 495us — three-plus orders of magnitude under
-the ~3.3s headroom the aggregate sample-rate configuration (Phase 0, U6/U7) provides per ring.
-Zero `lost_records`/`lost_events` on that workload, every run.
-
-**Profiling cost — measured, and not in the expected direction.** Comparing the target's own
-self-reported wall-clock time, standalone vs. under CacheLens, across 5 interleaved paired
-trials: the target ran *faster* under CacheLens in all five, by about 17%, not slower. This
-project's own prior finding is that background load biases results *upward* (see the first case
-study) — this result is neither that nor the naive "profiling adds overhead" expectation. A
-plausible mechanism (PMU sampling interrupts, tens of thousands per second, interacting with the
-`powersave` governor's frequency selection) was proposed but not confirmed — an attempt to
-verify it via live CPU-frequency sampling failed on timing precision against a sub-second
-benchmark, and is reported as an open question rather than forced into an answer.
-
-**Because the drain keeps up and profiling shows no measured cost, Phase 7 (a concurrent queue
-inside CacheLens's own drain path) does not happen** — the expected outcome under the aggregate
-sample-rate configuration, and, like the governor null result, worth recording precisely because
-it was tested rather than assumed.
-
-## Limitations and caveats
-
-- **Benchmarks are built `-O1`, not `-O2`.** At `-O2`, GCC auto-vectorizes `matrix_bad`'s inner
-  loop but not `matrix_good`'s — an asymmetric confound. `-O1` verified scalar for both via
-  `objdump` (zero `mulpd`/`movupd`) before any measurement was trusted.
-- **Concentration is not per-access ground truth.** It's a ratio of two independently sampled
-  event streams compared in aggregate at a site — not a claim that any specific sampled miss
-  and access were the same memory operation.
-- **The hardware events are the kernel's generalized `PERF_COUNT_HW_CACHE_MISSES`/`REFERENCES`,
-  not a confirmed LLC-only counter on this AMD chip.** This project has not independently
-  verified via raw PMU event codes that AMD Zen 4's mapping counts L3 activity exclusively.
-- **Transparent Huge Pages: `madvise`** — off for anonymous mappings unless requested, which
-  none of the benchmarks do. Would need rechecking on a host defaulting to `always`.
-- **`-no-pie`.** Required for the offline, no-live-process DWARF attribution to be valid
-  (link-time vaddr == runtime address). PIE support would need `PERF_RECORD_MMAP2` tracking —
-  deliberately deferred.
-- **`precise_ip=0`: this CPU has no PEBS-equivalent.** `precise_ip=2` and `1` both fail `ENOENT`
-  on this Zen 4 part; only arbitrary skid is available. Measured, not assumed: source-line skid
-  is 99.99% within ±2 lines for this specific benchmark (n=5, 119,196 samples pooled) — **this
-  is workload-specific, not a general guarantee.** It's absorbed here because the hot loop body
-  is 7 instructions across exactly 2 source lines; a larger loop body or heavy inlining would
-  give unbounded skid far more room to land on the wrong line. `addr2line` agreement is a
-  separate check (validates the DWARF lookup, not the sampled address) and stands at 22/22 —
-  the complete population of distinct addresses this workload produces this way, not a
-  subsample; the count saturated at 22 across 25 pooled runs and did not grow with more.
-- **Single machine, single configuration, single moment in time.** AMD Ryzen 5 7600X (Zen 4),
-  32 MiB L3, 16 GB DDR5 single-channel, Ubuntu, kernel `7.0.0-29-generic`. Not reproduced
-  elsewhere.
-- **Multithreaded targets: supported since Gate 7, at a real cost.** Earlier increments left
-  `attr.inherit` at 0 and silently profiled only the target's initial thread — undocumented at
-  the time. Sampling every thread of a multithreaded target requires one `perf_event_open` per
-  (event, online CPU) with `inherit=1` (`pid=-1` and `inherit=1` together disable the mmap ring
-  buffer entirely — see `docs/GATE7_PLAN.md` §1), which is 24 file descriptors and 24 ring
-  buffers on this 12-CPU machine, up from 2. See
-  [`docs/GATE7_PLAN.md`](docs/GATE7_PLAN.md) and
-  [`docs/GATE7_IMPLEMENTATION.md`](docs/GATE7_IMPLEMENTATION.md) for the design and the unknowns
-  closed along the way — including a real bug the regression guard caught: a per-CPU task
-  event's `time_running`/`time_enabled` ratio looks exactly like PMU contention on any CPU an
-  unpinned thread merely migrated through, and has to be summed across all per-CPU rings for an
-  event before that ratio means anything.
-- **No system-wide (`pid=-1`) or multi-process profiling.** Per-CPU events are opened for one
-  target task tree, not the whole machine — a deliberate scope boundary, not a gap.
-- **No cross-architecture abstraction (PEBS/IBS/SPE), no inline-frame expansion** (a sample
-  inside an inlined function attributes to the inline call site — both matrix benchmarks are
-  fully inlined into `main` at `-O1`), **no automatic code rewriting, no GUI.**
-
-## Reproducing
-
-A performance number without its environment recorded alongside it is not reproducible — not
-even by the person who measured it (see `docs/TAKEAWAYS.md`). Use
-[`scripts/measure_baseline.sh`](scripts/measure_baseline.sh) for every `perf stat` ground-truth
-measurement; it is required, not optional. It captures governor, load average, processes above
-1% CPU, THP, `perf_event_paranoid`, kernel version, compiler version, build flags, and core
-frequency alongside the numbers:
-
-```bash
-scripts/measure_baseline.sh results/my_run.txt "my-conditions-label"
-```
-
-Verified working (200s run, both benchmarks, environment block plus two full `perf stat -r 5`
-blocks written).
-
-To reproduce one specific prior `cachelens` run exactly rather than let it recalibrate: every
-automatic run prints its calibrated `period[miss]`/`period[access]`; read them back out and
-replay with `--period N` (applies to both events; skips calibration; the throttle halt stays
-active):
+### Replaying a run
 
 ```bash
 ./build/cachelens --period 50000 -- ./benchmarks/matrix_bad
 ```
 
-## Future work
+`--period N` skips calibration and applies `N` to both events. The throttle halt stays active.
 
-AMD IBS (Instruction-Based Sampling) is the AMD-side path to real instruction-level precision —
-the rough equivalent of what PEBS gives on Intel. It requires a dynamic PMU type
-(`/sys/bus/event_source/devices/ibs_op`), not `PERF_TYPE_HARDWARE`, and a different sample
-record layout. Deliberately deferred: `precise_ip=0`'s skid was measured and found absorbed for
-this specific benchmark pair, so there was no open correctness question IBS was needed to
-close — see the workload-specific caveat above before assuming that still holds for a different
-target.
+## Architecture
 
-## Debugging log
+```mermaid
+flowchart LR
+    T[target binary] --> C[Calibrate<br/>counting mode]
+    C --> S[Sample<br/>perf_event_open x2 per CPU]
+    S --> A[Attribute<br/>libdw, offline]
+    A --> R[Rank<br/>Wilson lower bound]
+    R --> P[Report<br/>concentration + raw count]
+```
 
-[`docs/TAKEAWAYS.md`](docs/TAKEAWAYS.md) is a running record of bugs found in this tool, their
-root causes, and why each one wasn't obvious in advance.
+Everything lives in one file, [`src/main.cpp`](src/main.cpp) (~1,025 lines), in banner-commented
+sections that follow the pipeline order. Why it is one file, and every other place the code
+departs from the original spec, is recorded in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+**Why a Wilson lower bound?** A plain ratio lets a low-traffic line with a lucky 3/3 sample
+outrank the real bottleneck. The Wilson lower bound scores 3/3 at about 0.44 and 3,000/4,000 at
+about 0.74, so evidence wins over noise. Lines below the 30-sample support gate are printed as
+insufficient, not silently dropped.
+
+## Benchmarks
+
+| Benchmark | Access pattern | `make` target | Flags | Before/after pair |
+| --- | --- | --- | --- | :---: |
+| `matrix_bad` / `matrix_good` | i-j-k vs i-k-j matrix multiply, N=2400 | `all` | `-O1` | :heavy_check_mark: |
+| `pointer_chase` | Linked list with nodes scattered across the heap | `all` | `-O1` | :x: |
+| `spsc_queue_{shared,padded}` | SPSC queue, head/tail indices on one line vs two | `queues` | `-O1` (+`_O2`) | :heavy_check_mark: |
+| `mpmc_queue_{shared,padded}` | Vyukov MPMC queue under 4-core contention | `queues` | `-O1` (+`_O2`) | :heavy_check_mark: |
+| `queue_latency_{shared,padded}` | Open-loop, rate-controlled SPSC latency harness | `latency` | `-O2` | :heavy_check_mark: |
+
+Each padded/shared pair is built from **one source file** with `-DCACHELENS_PAD_INDICES=0|1`, so
+the two builds differ in exactly one thing. `objdump` confirms the field offsets.
+
+## Case Studies
+
+| Study | Result | Record |
+| --- | --- | --- |
+| **Matrix locality** | Concentration picks line 44, raw count picks line 43. The fixed loop runs 2.08–2.10x faster, with miss rate dropping from 8.99% to 1.23%. | [`gate5_concentration`](results/gate5_concentration.txt), [`phase1_matrix`](results/phase1_matrix.txt), [`drift_investigation`](results/drift_investigation.txt) |
+| **False sharing (SPSC queue)** | Padded build runs 2.75–3.62x faster. A pre-registered *which-line* prediction **failed**: the largest padding response (+673%) landed one instruction past the index store, which is skid. The mechanism prediction held. | [`gate7_false_sharing`](results/gate7_false_sharing.txt), [`GATE7_PLAN.md` §0](docs/GATE7_PLAN.md) |
+| **Tail latency** | At 500k ops/s, false sharing raises p50/p99 by 10–20%. p99.9 and above is dominated by OS scheduling noise. The governor has no effect on typical latency but does change the shape of the tail. | [`gate7_latency`](results/gate7_latency.txt) |
+| **Profiler overhead** | Worst drain iteration was 495 µs against ~3.3 s of ring headroom, with zero lost records. The target ran ~17% *faster* under CacheLens. That is still unexplained and is reported as open. | [`gate7_drain`](results/gate7_drain.txt) |
+| **Governor null result** | `performance` vs `powersave` differed by 0.07–0.11% on `matrix`. This corroborates that the speedup came from eliminated stalls (IPC ≈1.57 → ≈3.73). | [`drift_investigation`](results/drift_investigation.txt) |
+
+Each record lists the environment it was measured in, and failed predictions are reported with
+the data that explains them.
+
+## Limitations
+
+- **No precise sampling.** Zen 4 rejects `precise_ip` 1 and 2 (`ENOENT`), so samples have
+  unbounded skid. On `matrix_bad`, 99.99% of samples landed within ±2 lines, but that is
+  **specific to that workload**. On the SPSC queue, skid visibly moved the signal.
+- **Generalized events.** CacheLens uses the kernel's `PERF_COUNT_HW_CACHE_MISSES` /
+  `_REFERENCES`. Nobody has checked with raw PMU codes that on Zen 4 these count LLC activity
+  only.
+- **`-no-pie` required.** PIE support needs `PERF_RECORD_MMAP2` tracking and is deliberately
+  deferred.
+- **Inlined code attributes to the call site.** Both matrix benchmarks are fully inlined into
+  `main` at `-O1`.
+- **Multithreading costs file descriptors.** It uses 2 events × online CPUs rings: 24 fds and
+  24 × 512 KiB rings on a 12-CPU machine.
+- **One machine, one configuration.** Everything was measured on a single Ryzen 5 7600X
+  (32 MiB L3, single-channel DDR5, THP `madvise`) and has not been reproduced elsewhere.
+
+The full reasoning behind each limitation is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+and [`docs/TAKEAWAYS.md`](docs/TAKEAWAYS.md).
+
+## Reproducing Measurements
+
+A performance number is not reproducible without its environment, not even by the person
+who measured it. Every ground-truth measurement goes through a script that records governor,
+load, THP, `perf_event_paranoid`, kernel, compiler, build flags, and core frequencies next to
+the numbers:
+
+| Script | Produces |
+| --- | --- |
+| [`scripts/measure_baseline.sh`](scripts/measure_baseline.sh) `<out> <label>` | `perf stat -r 5` on both matrix benchmarks, with environment block |
+| [`scripts/measure_queue.sh`](scripts/measure_queue.sh) | Padded/shared queue A/B plus `objdump` layout evidence |
+| [`scripts/measure_latency.sh`](scripts/measure_latency.sh) | 5 latency-harness runs under the current governor |
+| [`scripts/run_gate7_probes.sh`](scripts/run_gate7_probes.sh) | Builds and runs probes P1–P4 |
+
+## Repository Layout
+
+```
+src/main.cpp        the entire profiler
+benchmarks/         paired workloads with known answers, plus their Makefile
+probes/             standalone kernel/PMU probes (not cachelens code)
+scripts/            measurement scripts that attach an environment block
+results/            raw measurement records
+docs/               architecture, debugging log, Gate 7 plan and implementation
+docs/archive/       pre-rearchitecture design docs, kept for history
+```
+
+## Future Work
+
+- **AMD IBS** (`/sys/bus/event_source/devices/ibs_op`) is AMD's route to instruction-level
+  precision. It needs a dynamic PMU type and a different record layout. It was deferred because
+  skid was absorbed on the original benchmark, but the Gate 7 queue result shows why it matters.
+- **PIE support** via `PERF_RECORD_MMAP2` tracking.
+- **Splitting `main.cpp` into modules** as designed in `ARCHITECTURE.md` §1.1.
+- **Reproduction on a second machine**, ideally Intel, where the `precise_ip` ladder would come
+  back.
+
+## Citing the Project
+
+```bibtex
+@software{rahman2026cachelens,
+  author = {Rahman, Efaz},
+  title  = {CacheLens: Concentration-Ranked Cache-Miss Profiling on Linux},
+  year   = {2026},
+  url    = {https://github.com/efazman/CacheLens}
+}
+```
+
+## Maintainer
+
+Built and maintained by [Efaz Rahman](https://github.com/efazman). Issues and pull requests are
+welcome, especially reproductions on hardware other than Zen 4.
+
+## Acknowledgments
+
+CacheLens builds on the Linux `perf_event_open(2)` interface and its man-page documentation of
+the mmap ring-buffer protocol, on [elfutils](https://sourceware.org/elfutils/) `libdw` for DWARF
+line lookup, and on stock `perf`, which served as the independent reference every CacheLens
+number was checked against. The bounded MPMC benchmark follows Dmitry Vyukov's per-slot-sequence
+queue design.
